@@ -465,7 +465,24 @@ class HomePage {
             const streamId = item.item_id;
             const container = item.container_extension || (item.data && item.data.containerExtension) || 'mp4';
 
-            const result = await window.API.request('GET', `/proxy/xtream/${sourceId}/stream/${streamId}/${streamType}?container=${container}`);
+            // Determine source type to use correct proxy API
+            let sourceType = item.data && item.data.sourceType;
+            if (!sourceType) {
+                // Try to resolve from loaded sources
+                try {
+                    const source = await window.API.sources.getById(sourceId);
+                    sourceType = source ? source.type : 'xtream';
+                } catch (e) {
+                    sourceType = 'xtream';
+                }
+            }
+
+            let result;
+            if (sourceType === 'stalker') {
+                result = { url: `stalker://${sourceId}/${streamId}/${streamType}` };
+            } else {
+                result = await window.API.request('GET', `/proxy/xtream/${sourceId}/stream/${streamId}/${streamType}?container=${container}`);
+            }
 
             if (result && result.url) {
                 const content = {
@@ -485,8 +502,8 @@ class HomePage {
                     content.currentSeason = item.data.currentSeason || null;
                     content.currentEpisode = item.data.currentEpisode || null;
 
-                    // Fetch seriesInfo if we have a seriesId
-                    if (content.seriesId && sourceId) {
+                    // Fetch seriesInfo if we have a seriesId (Xtream only)
+                    if (content.seriesId && sourceId && sourceType !== 'stalker') {
                         try {
                             const seriesInfo = await window.API.request('GET', `/proxy/xtream/${sourceId}/series_info?series_id=${content.seriesId}`);
                             if (seriesInfo) {

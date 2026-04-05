@@ -14,9 +14,15 @@ const db = require('../db');
  * Note: This does NOT fix Dolby/AC3 audio issues - use /api/transcode for that.
  */
 router.get('/', async (req, res) => {
-    const { url } = req.query;
+    let { url } = req.query;
     if (!url) {
         return res.status(400).json({ error: 'URL parameter is required' });
+    }
+
+    // Resolve relative URLs (e.g., /api/proxy/stream?...) to absolute for FFmpeg
+    if (url.startsWith('/')) {
+        const port = req.app.get('port') || req.socket.localPort || 3000;
+        url = `http://127.0.0.1:${port}${url}`;
     }
 
     const ffmpegPath = req.app.locals.ffmpegPath || 'ffmpeg';

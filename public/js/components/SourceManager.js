@@ -1,11 +1,12 @@
 /**
  * Source Manager Component
- * Handles adding, editing, and deleting sources (Xtream, M3U, EPG)
+ * Handles adding, editing, and deleting sources (Xtream, Stalker, M3U, EPG)
  */
 
 class SourceManager {
     constructor() {
         this.xtreamList = document.getElementById('xtream-list');
+        this.stalkerList = document.getElementById('stalker-list');
         this.m3uList = document.getElementById('m3u-list');
         this.epgList = document.getElementById('epg-list');
 
@@ -23,6 +24,7 @@ class SourceManager {
     init() {
         // Add source buttons
         document.getElementById('add-xtream').addEventListener('click', () => this.showAddModal('xtream'));
+        document.getElementById('add-stalker').addEventListener('click', () => this.showAddModal('stalker'));
         document.getElementById('add-m3u').addEventListener('click', () => this.showAddModal('m3u'));
         document.getElementById('add-epg').addEventListener('click', () => this.showAddModal('epg'));
 
@@ -113,6 +115,7 @@ class SourceManager {
             const sources = await API.sources.getAll();
 
             this.renderSourceList(this.xtreamList, sources.filter(s => s.type === 'xtream'), 'xtream');
+            this.renderSourceList(this.stalkerList, sources.filter(s => s.type === 'stalker'), 'stalker');
             this.renderSourceList(this.m3uList, sources.filter(s => s.type === 'm3u'), 'm3u');
             this.renderSourceList(this.epgList, sources.filter(s => s.type === 'epg'), 'epg');
         } catch (err) {
@@ -129,7 +132,7 @@ class SourceManager {
             return;
         }
 
-        const icons = { xtream: Icons.live, m3u: Icons.guide, epg: Icons.series };
+        const icons = { xtream: Icons.live, stalker: Icons.live, m3u: Icons.guide, epg: Icons.series };
 
         container.innerHTML = sources.map(source => `
       <div class="source-item ${source.enabled ? '' : 'disabled'}" data-id="${source.id}">
@@ -171,7 +174,7 @@ class SourceManager {
         const body = document.getElementById('modal-body');
         const footer = document.getElementById('modal-footer');
 
-        const titles = { xtream: 'Add Xtream Connection', m3u: 'Add M3U Playlist', epg: 'Add EPG Source' };
+        const titles = { xtream: 'Add Xtream Connection', stalker: 'Add Stalker Portal', m3u: 'Add M3U Playlist', epg: 'Add EPG Source' };
         title.textContent = titles[type];
 
         body.innerHTML = this.getSourceForm(type);
@@ -230,11 +233,14 @@ class SourceManager {
       </div>
     `;
 
+        const urlLabel = type === 'xtream' ? 'Server URL' : type === 'stalker' ? 'Portal URL' : 'URL';
+        const urlPlaceholder = type === 'xtream' ? 'http://server.com:port' : type === 'stalker' ? 'https://portal.example.com/stalker_portal/c/' : 'https://example.com/playlist.m3u';
+
         const urlField = `
       <div class="form-group">
-        <label for="source-url">${type === 'xtream' ? 'Server URL' : 'URL'}</label>
-        <input type="text" id="source-url" class="form-input" 
-               placeholder="${type === 'xtream' ? 'http://server.com:port' : 'https://example.com/playlist.m3u'}" 
+        <label for="source-url">${urlLabel}</label>
+        <input type="text" id="source-url" class="form-input"
+               placeholder="${urlPlaceholder}"
                value="${source.url || ''}">
       </div>
     `;
@@ -249,8 +255,40 @@ class SourceManager {
         </div>
         <div class="form-group">
           <label for="source-password">Password</label>
-          <input type="password" id="source-password" class="form-input" 
+          <input type="password" id="source-password" class="form-input"
                  value="${source.password && !source.password.includes('•') ? source.password : ''}">
+        </div>
+      `;
+        }
+
+        if (type === 'stalker') {
+            return `
+        ${nameField}
+        ${urlField}
+        <div class="form-group">
+          <label for="source-mac">MAC Address</label>
+          <input type="text" id="source-mac" class="form-input" placeholder="00:1A:79:00:00:00" value="${source.mac || ''}">
+        </div>
+        <div class="form-divider"><span>Device Hardware (Optional)</span></div>
+        <div class="form-group">
+          <label for="source-serial">Serial Number</label>
+          <input type="text" id="source-serial" class="form-input" placeholder="Auto-generated if empty" value="${source.serial_number || ''}">
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="source-device-id">Device ID 1</label>
+            <input type="text" id="source-device-id" class="form-input" placeholder="Auto-generated if empty" value="${source.device_id || ''}">
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="source-device-id2">Device ID 2</label>
+            <input type="text" id="source-device-id2" class="form-input" placeholder="Auto-generated if empty" value="${source.device_id2 || ''}">
+          </div>
+        </div>
+        <div class="form-divider"><span>Adult Content (Optional)</span></div>
+        <div class="form-group">
+          <label for="source-adult-password">Adult Password</label>
+          <input type="password" id="source-adult-password" class="form-input" placeholder="Parental control password"
+                 value="${source.adult_password && !source.adult_password.includes('•') ? source.adult_password : ''}">
         </div>
       `;
         }
@@ -270,6 +308,15 @@ class SourceManager {
         if (!name || !url) {
             alert('Name and URL are required');
             return;
+        }
+
+        // Stalker requires MAC
+        if (type === 'stalker') {
+            const mac = document.getElementById('source-mac')?.value.trim();
+            if (!mac) {
+                alert('MAC Address is required for Stalker Portal');
+                return;
+            }
         }
 
         try {
@@ -295,7 +342,18 @@ class SourceManager {
                 }
             }
 
-            await API.sources.create({ type, name, url, username, password });
+            const data = { type, name, url, username, password };
+
+            // Collect stalker-specific fields
+            if (type === 'stalker') {
+                data.mac = document.getElementById('source-mac')?.value.trim() || null;
+                data.serial_number = document.getElementById('source-serial')?.value.trim() || null;
+                data.device_id = document.getElementById('source-device-id')?.value.trim() || null;
+                data.device_id2 = document.getElementById('source-device-id2')?.value.trim() || null;
+                data.adult_password = document.getElementById('source-adult-password')?.value.trim() || null;
+            }
+
+            await API.sources.create(data);
             document.getElementById('modal').classList.remove('active');
             await this.loadSources();
 
@@ -328,6 +386,16 @@ class SourceManager {
             if (type === 'xtream') {
                 data.username = username;
                 if (password) data.password = password;
+            }
+
+            if (type === 'stalker') {
+                data.mac = document.getElementById('source-mac')?.value.trim() || null;
+                data.username = username || null;
+                if (password) data.password = password;
+                data.serial_number = document.getElementById('source-serial')?.value.trim() || null;
+                data.device_id = document.getElementById('source-device-id')?.value.trim() || null;
+                data.device_id2 = document.getElementById('source-device-id2')?.value.trim() || null;
+                data.adult_password = document.getElementById('source-adult-password')?.value.trim() || null;
             }
 
             await API.sources.update(id, data);
@@ -469,6 +537,12 @@ class SourceManager {
                     await window.app.channelList.loadChannels();
                 }
                 alert('Xtream data synced & refreshed!');
+            } else if (type === 'stalker') {
+                // Re-fetch stalker data by reloading channels
+                if (window.app?.channelList) {
+                    await window.app.channelList.loadChannels();
+                }
+                alert('Stalker portal synced & refreshed!');
             } else if (type === 'm3u') {
                 // Re-fetch M3U data by reloading channels
                 if (window.app?.channelList) {
@@ -584,7 +658,7 @@ class SourceManager {
             // Keep the placeholder option
             select.innerHTML = '<option value="">Select a source...</option>';
 
-            sources.filter(s => s.type === 'xtream' || s.type === 'm3u').forEach(source => {
+            sources.filter(s => s.type === 'xtream' || s.type === 'stalker' || s.type === 'm3u').forEach(source => {
                 select.innerHTML += `<option value="${source.id}">${source.name} (${source.type})</option>`;
             });
         } catch (err) {
@@ -612,8 +686,8 @@ class SourceManager {
 
             let categoryMap = {};
 
-            if (source.type === 'xtream' || source.type === 'm3u') {
-                // Use unified Xtream API endpoints - backend supports both source types
+            if (source.type === 'xtream' || source.type === 'm3u' || source.type === 'stalker') {
+                // Use unified Xtream API endpoints - backend serves from DB for all source types
                 // Use includeHidden to show ALL items in the content manager
                 const categories = await API.proxy.xtream.liveCategories(sourceId, { includeHidden: true });
                 const streams = await API.proxy.xtream.liveStreams(sourceId, null, { includeHidden: true });
@@ -842,8 +916,8 @@ class SourceManager {
         try {
             const source = await API.sources.getById(sourceId);
 
-            if (source.type !== 'xtream') {
-                this.contentTree.innerHTML = '<p class="hint">Movie categories are only available for Xtream sources</p>';
+            if (source.type !== 'xtream' && source.type !== 'stalker') {
+                this.contentTree.innerHTML = '<p class="hint">Movie categories are only available for Xtream and Stalker sources</p>';
                 return;
             }
 
@@ -899,8 +973,8 @@ class SourceManager {
         try {
             const source = await API.sources.getById(sourceId);
 
-            if (source.type !== 'xtream') {
-                this.contentTree.innerHTML = '<p class="hint">Series categories are only available for Xtream sources</p>';
+            if (source.type !== 'xtream' && source.type !== 'stalker') {
+                this.contentTree.innerHTML = '<p class="hint">Series categories are only available for Xtream and Stalker sources</p>';
                 return;
             }
 

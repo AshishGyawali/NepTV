@@ -1,6 +1,7 @@
 const { getDb } = require('../db/sqlite');
 const { sources, settings } = require('../db'); // For source config and settings
 const xtreamApi = require('./xtreamApi');
+const stalkerApi = require('./stalkerApi');
 const m3uParser = require('./m3uParser');
 const epgParser = require('./epgParser');
 
@@ -134,6 +135,8 @@ class SyncService {
 
             if (source.type === 'xtream') {
                 await this.syncXtream(source);
+            } else if (source.type === 'stalker') {
+                await this.syncStalker(source);
             } else if (source.type === 'm3u') {
                 await this.syncM3u(source);
             } else if (source.type === 'epg') {
@@ -213,6 +216,170 @@ class SyncService {
         } catch (e) {
             console.warn('[Sync] XMLTV fetch failed, skipping EPG sync for now:', e.message);
         }
+    }
+
+    /**
+     * Stalker Portal Sync Logic
+     * Only syncs categories + live channels.
+     * VOD/Series items are loaded on-demand per category via proxy routes.
+     */
+    async syncStalker(source) {
+        const api = stalkerApi.createFromSource(source);
+
+        // Authenticate first
+        console.log(`[Sync] Authenticating Stalker portal for ${source.name}`);
+        await api.handshake();
+
+        // 1. Live Categories
+        console.log(`[Sync] Fetching Live Categories for ${source.name} (Stalker)`);
+        const liveCats = await api.getLiveCategories();
+        await this.saveCategories(source.id, 'live', liveCats);
+
+        // 2. Live Streams — fetch per category for speed (parallel-safe, avoids global pagination)
+        console.log(`[Sync] Fetching Live Streams for ${source.name} (Stalker)`);
+        try {
+            const liveStreams = await api.getAllChannels();
+            await this.saveStalkerStreams(source.id, 'live', liveStreams);
+        } catch (err) {
+            console.warn(`[Sync] Live streams sync failed for ${source.name}:`, err.message);
+        }
+
+        // 3. VOD Categories only (items loaded on-demand when user browses)
+        try {
+            console.log(`[Sync] Fetching VOD Categories for ${source.name} (Stalker)`);
+            const vodCats = await api.getVodCategories();
+            await this.saveCategories(source.id, 'movie', vodCats);
+            console.log(`[Sync] Saved ${vodCats.length} VOD categories (items will load on-demand)`);
+        } catch (err) {
+            console.warn(`[Sync] VOD categories sync failed for ${source.name}:`, err.message);
+        }
+
+        // 4. Series Categories (dedicated endpoint, falls back to VOD categories)
+        try {
+            console.log(`[Sync] Fetching Series Categories for ${source.name} (Stalker)`);
+            const seriesCats = await api.getSeriesCategories();
+            await this.saveCategories(source.id, 'series', seriesCats);
+            console.log(`[Sync] Saved ${seriesCats.length} Series categories (items will load on-demand)`);
+        } catch (err) {
+            console.warn(`[Sync] Series categories sync failed for ${source.name}:`, err.message);
+        }
+
+        console.log(`[Sync] Stalker sync complete for ${source.name}`);
+    }
+
+    /**
+     * Stalker on-demand fetch: load items for a specific category from the portal,
+     * save to DB, and return them. Used by proxy routes when DB is empty for a category.
+     */
+    async stalkerOnDemandFetch(source, type, categoryId) {
+        const api = stalkerApi.createFromSource(source);
+
+        console.log(`[Stalker] On-demand fetch: ${type} category=${categoryId} for ${source.name}`);
+
+        if (type === 'movie') {
+            const items = await api.getVodStreams(categoryId);
+            if (items.length > 0) {
+                await this.saveStalkerStreams(source.id, 'movie', items, { skipPurge: true });
+            }
+            return items.length;
+        } else if (type === 'series') {
+            const items = await api.getSeries(categoryId);
+            if (items.length > 0) {
+                await this.saveStalkerStreams(source.id, 'series', items, { skipPurge: true });
+            }
+            return items.length;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Save Stalker streams to database
+     * Similar to saveStreams but handles stalker-specific fields (cmd, etc.)
+     */
+    async saveStalkerStreams(sourceId, type, items, options = {}) {
+        if (!items || items.length === 0) return new Set();
+        const db = getDb();
+        const { skipPurge = false } = options;
+        const syncedIds = new Set();
+
+        const stmt = db.prepare(`
+            INSERT INTO playlist_items (
+                id, source_id, item_id, type, name, category_id,
+                stream_icon, stream_url, container_extension,
+                rating, year, added_at, data
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                category_id = excluded.category_id,
+                stream_icon = excluded.stream_icon,
+                container_extension = excluded.container_extension,
+                data = excluded.data
+        `);
+
+        const insertBatch = db.transaction((batch) => {
+            for (const item of batch) {
+                let itemId, name, catId, icon, container;
+                let rating = null, year = null, added = null;
+
+                if (type === 'live') {
+                    itemId = item.stream_id;
+                    name = item.name;
+                    catId = item.category_id;
+                    icon = item.stream_icon;
+                } else if (type === 'movie') {
+                    itemId = item.stream_id;
+                    name = item.name;
+                    catId = item.category_id;
+                    icon = item.stream_icon;
+                    container = item.container_extension;
+                    rating = item.rating;
+                    year = item.year;
+                    added = item.added;
+                } else if (type === 'series') {
+                    itemId = item.series_id;
+                    name = item.name;
+                    catId = item.category_id;
+                    icon = item.cover;
+                    rating = item.rating;
+                    year = item.year;
+                }
+
+                const id = `${sourceId}:${itemId}`;
+                syncedIds.add(id);
+
+                stmt.run(
+                    id,
+                    sourceId,
+                    String(itemId),
+                    type,
+                    name,
+                    String(catId),
+                    icon,
+                    null, // stream_url - resolved on-demand via create_link
+                    container,
+                    rating,
+                    year,
+                    added,
+                    JSON.stringify(item) // Full item data including cmd
+                );
+            }
+        });
+
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < items.length; i += BATCH_SIZE) {
+            insertBatch(items.slice(i, i + BATCH_SIZE));
+            await new Promise(resolve => setImmediate(resolve));
+        }
+
+        // Purge stale items (skip for on-demand category fetches)
+        if (!skipPurge && syncedIds.size > 0) {
+            await this.purgeStaleItems(sourceId, type, syncedIds);
+        }
+
+        console.log(`[Sync] Saved ${items.length} stalker ${type} items`);
+        return syncedIds;
     }
 
     /**

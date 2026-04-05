@@ -93,6 +93,7 @@ class WatchPage {
 
         // Watch history
         this.historyInterval = null;
+        this.isResettingVideo = false;
 
         this.init();
     }
@@ -338,14 +339,27 @@ class WatchPage {
                     ...options
                 })
             });
-            if (!res.ok) throw new Error('Failed to start session');
+            if (!res.ok) {
+                let details = 'Failed to start session';
+                try {
+                    const err = await res.json();
+                    details = err.details || err.reason || err.error || details;
+                } catch (_) {
+                    // Ignore parse errors and fall back to generic message
+                }
+                throw new Error(details);
+            }
             const session = await res.json();
             this.currentSessionId = session.sessionId;
             return session.playlistUrl;
         } catch (err) {
             console.error('[WatchPage] Session start failed:', err);
             // Fallback to direct transcode if session fails
-            return `/api/transcode?url=${encodeURIComponent(url)}`;
+            const params = new URLSearchParams({ url });
+            if (options.audioIdx !== undefined) params.set('audioIdx', String(options.audioIdx));
+            if (options.audioChannels !== undefined) params.set('audioChannels', String(options.audioChannels));
+            if (options.audioCodec) params.set('audioCodec', options.audioCodec);
+            return `/api/transcode?${params.toString()}`;
         }
     }
 
@@ -409,6 +423,39 @@ class WatchPage {
         }
     }
 
+    getProxiedUrl(url) {
+        if (url.startsWith('/api/proxy/stream')) return url;
+        return `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+    }
+
+    getRemuxUrl(url) {
+        const proxyRequiredDomains = ['pluto.tv'];
+        const needsProxy = url.startsWith('stalker://') || proxyRequiredDomains.some(domain => url.includes(domain));
+        const inputUrl = needsProxy ? this.getProxiedUrl(url) : url;
+        return `/api/remux?url=${encodeURIComponent(inputUrl)}`;
+    }
+
+    playNativeSource(url, context = 'playback') {
+        if (!url) {
+            console.error(`[WatchPage] Cannot start ${context}: empty URL`);
+            return;
+        }
+
+        if (this.hls) {
+            this.hls.destroy();
+            this.hls = null;
+        }
+
+        this.isResettingVideo = false;
+        this.video.src = url;
+        this.video.load();
+        this.video.play().catch(e => {
+            if (e.name !== 'AbortError') {
+                console.error(`[WatchPage] ${context} error:`, e);
+            }
+        });
+    }
+
     async loadVideo(url) {
         // Store the URL for copy functionality
         this.currentUrl = url;
@@ -470,11 +517,8 @@ class WatchPage {
                     // TODO: Move remux to session logic if seeking is needed for TS files
                     console.log('[WatchPage] Auto: Using remux (.ts container)');
                     this.updateTranscodeStatus('remuxing', 'Remux (Auto)');
-                    const finalUrl = `/api/remux?url=${encodeURIComponent(url)}`;
-                    this.video.src = finalUrl;
-                    this.video.play().catch(e => {
-                        if (e.name !== 'AbortError') console.error('[WatchPage] Autoplay error:', e);
-                    });
+                    const finalUrl = this.getRemuxUrl(url);
+                    this.playNativeSource(finalUrl, 'remux');
                     this.setVolumeFromStorage();
                     return;
                 }
@@ -528,19 +572,17 @@ class WatchPage {
         if (settings.forceRemux && isRawTs) {
             console.log('[WatchPage] Force Remux enabled');
             this.updateTranscodeStatus('remuxing', 'Remux (Force)');
-            const finalUrl = `/api/remux?url=${encodeURIComponent(url)}`;
-            this.video.src = finalUrl;
-            this.video.play().catch(e => {
-                if (e.name !== 'AbortError') console.error('[WatchPage] Autoplay error:', e);
-            });
+            const finalUrl = this.getRemuxUrl(url);
+            this.playNativeSource(finalUrl, 'remux');
             this.setVolumeFromStorage();
             return;
         }
 
         // Determine if proxy is needed
         const proxyRequiredDomains = ['pluto.tv'];
-        const needsProxy = settings.forceProxy || proxyRequiredDomains.some(domain => url.includes(domain));
-        const finalUrl = needsProxy ? `/api/proxy/stream?url=${encodeURIComponent(url)}` : url;
+        const isStalkerUrl = url.startsWith('stalker://');
+        const needsProxy = settings.forceProxy || isStalkerUrl || proxyRequiredDomains.some(domain => url.includes(domain));
+        const finalUrl = needsProxy ? this.getProxiedUrl(url) : url;
 
         console.log('[WatchPage] Playing:', { url, needsProxy, looksLikeHls });
 
@@ -551,10 +593,7 @@ class WatchPage {
         } else {
             // Direct playback for mp4/mkv/avi
             this.updateTranscodeStatus('direct', 'Direct Play');
-            this.video.src = finalUrl;
-            this.video.play().catch(e => {
-                if (e.name !== 'AbortError') console.error('[WatchPage] Autoplay error:', e);
-            });
+            this.playNativeSource(finalUrl, 'direct play');
         }
 
         this.setVolumeFromStorage();
@@ -564,6 +603,11 @@ class WatchPage {
      * Play HLS stream using Hls.js
      */
     playHls(url) {
+        if (url && url.startsWith('/api/transcode?')) {
+            this.playNativeSource(url, 'transcode fallback');
+            return;
+        }
+
         if (this.hls) {
             this.hls.destroy();
         }
@@ -602,7 +646,7 @@ class WatchPage {
                 // Note: Transcoded streams are local, so no CORS issues usually
                 if (!url.startsWith('/api/') && (data.type === Hls.ErrorTypes.NETWORK_ERROR)) {
                     console.log('[WatchPage] Retrying via proxy...');
-                    this.playHls(`/api/proxy/stream?url=${encodeURIComponent(this.currentUrl)}`);
+                    this.playHls(this.getProxiedUrl(this.currentUrl));
                 } else {
                     this.hls.destroy();
                 }
@@ -636,8 +680,9 @@ class WatchPage {
             this.hls = null;
         }
         if (this.video) {
+            this.isResettingVideo = true;
             this.video.pause();
-            this.video.src = '';
+            this.video.removeAttribute('src');
             this.video.load();
         }
 
@@ -853,6 +898,9 @@ class WatchPage {
 
     onError(e) {
         // Only log actual fatal errors, not benign stream recovery events
+        if (this.isResettingVideo || !(this.video?.currentSrc || this.video?.getAttribute('src'))) {
+            return;
+        }
         const error = this.video?.error;
         if (error && error.code) {
             console.error('[WatchPage] Video error:', error.code, error.message);
@@ -1153,6 +1201,21 @@ class WatchPage {
         });
     }
 
+    /**
+     * Get stream URL, auto-detecting stalker vs xtream source type
+     */
+    async _getStreamUrl(sourceId, streamId, type, container = 'mp4') {
+        try {
+            const source = await API.sources.getById(sourceId);
+            if (source && source.type === 'stalker') {
+                return { url: `stalker://${sourceId}/${streamId}/${type}` };
+            }
+        } catch (e) {
+            // Fallback to xtream
+        }
+        return API.proxy.xtream.getStreamUrl(sourceId, streamId, type, container);
+    }
+
     async playRecommendedMovie(streamId, sourceId) {
         try {
             // Fetch movie details
@@ -1162,7 +1225,7 @@ class WatchPage {
             if (!movie) return;
 
             const container = movie.container_extension || 'mp4';
-            const result = await API.proxy.xtream.getStreamUrl(sourceId, streamId, 'movie', container);
+            const result = await this._getStreamUrl(sourceId, streamId, 'movie', container);
 
             if (result?.url) {
                 this.play({
@@ -1243,7 +1306,7 @@ class WatchPage {
         const container = episodeEl.dataset.container || 'mp4';
 
         try {
-            const result = await API.proxy.xtream.getStreamUrl(this.content.sourceId, episodeId, 'series', container);
+            const result = await this._getStreamUrl(this.content.sourceId, episodeId, 'series', container);
 
             if (result?.url) {
                 const episodeTitle = episodeEl.querySelector('.watch-episode-title')?.textContent || `Episode ${episodeNum}`;
@@ -1336,7 +1399,7 @@ class WatchPage {
 
         try {
             const container = nextEp.container_extension || 'mp4';
-            const result = await API.proxy.xtream.getStreamUrl(this.content.sourceId, nextEp.id, 'series', container);
+            const result = await this._getStreamUrl(this.content.sourceId, nextEp.id, 'series', container);
 
             if (result?.url) {
                 this.play({

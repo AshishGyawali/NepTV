@@ -93,7 +93,7 @@ class MoviesPage {
     async loadSources() {
         try {
             const allSources = await API.sources.getAll();
-            this.sources = allSources.filter(s => s.type === 'xtream' && s.enabled);
+            this.sources = allSources.filter(s => (s.type === 'xtream' || s.type === 'stalker') && s.enabled);
 
             this.sourceSelect.innerHTML = '<option value="">All Sources</option>';
             this.sources.forEach(s => {
@@ -162,7 +162,19 @@ class MoviesPage {
 
     async loadMovies() {
         this.isLoading = true;
-        this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div></div>';
+
+        // Check if any source is stalker (loading may take longer)
+        const hasStalker = this.sources.some(s => s.type === 'stalker');
+        const loadingMsg = hasStalker
+            ? 'Fetching movies from portal... This may take a moment.'
+            : 'Loading movies...';
+
+        this.container.innerHTML = `
+            <div class="loading-container">
+                <div class="loading-spinner"></div>
+                <p class="loading-text">${loadingMsg}</p>
+            </div>
+        `;
 
         try {
             this.movies = [];
@@ -185,6 +197,12 @@ class MoviesPage {
                         } else if (sourceId) {
                             continue; // Skip this source if category is from different source
                         }
+                    }
+
+                    // For stalker with "All Categories", encourage picking a category
+                    if (source.type === 'stalker' && !catId) {
+                        // Attempt to load first few categories' content
+                        this._updateLoadingText('Fetching movies from portal...');
                     }
 
                     const movies = await API.proxy.xtream.vodStreams(source.id, catId);
@@ -215,6 +233,11 @@ class MoviesPage {
         } finally {
             this.isLoading = false;
         }
+    }
+
+    _updateLoadingText(text) {
+        const el = this.container.querySelector('.loading-text');
+        if (el) el.textContent = text;
     }
 
     filterAndRender() {
@@ -338,7 +361,14 @@ class MoviesPage {
             // Get stream URL for movie using the actual container extension from API
             // Xtream API returns container_extension (e.g., 'mp4', 'mkv', 'avi')
             const container = movie.container_extension || 'mp4';
-            const result = await API.proxy.xtream.getStreamUrl(movie.sourceId, movie.stream_id, 'movie', container);
+
+            // Determine source type to use correct API
+            const source = this.sources.find(s => s.id === movie.sourceId);
+            const isStalker = source && source.type === 'stalker';
+
+            const result = isStalker
+                ? { url: `stalker://${movie.sourceId}/${movie.stream_id}/movie` }
+                : await API.proxy.xtream.getStreamUrl(movie.sourceId, movie.stream_id, 'movie', container);
 
             if (result && result.url) {
                 // Play in dedicated Watch page

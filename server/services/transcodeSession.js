@@ -81,6 +81,17 @@ class TranscodeSession extends EventEmitter {
     }
 
     /**
+     * Emit an error without crashing the process when no listener is attached.
+     */
+    emitSessionError(err) {
+        if (this.listenerCount('error') > 0) {
+            this.emit('error', err);
+        } else {
+            console.error(`[TranscodeSession ${this.id}] Unhandled session error:`, err);
+        }
+    }
+
+    /**
      * Start the transcoding process
      */
     async start() {
@@ -153,7 +164,7 @@ class TranscodeSession extends EventEmitter {
                 console.error(`[TranscodeSession ${this.id}] FFmpeg error:`, err);
                 this.status = 'error';
                 this.error = err.message;
-                this.emit('error', err);
+                this.emitSessionError(err);
             });
 
             // Save session metadata
@@ -203,6 +214,23 @@ class TranscodeSession extends EventEmitter {
             '-reconnect_delay_max', '3'
         );
 
+        if (this.options.customHeaders) {
+            args.push('-headers', this.options.customHeaders);
+        }
+
+        // Add Stalker portal headers (cookies) for authenticated stream access
+        if (this.options.stalkerHeaders) {
+            const sh = this.options.stalkerHeaders;
+            if (sh.cookie) {
+                args.push('-cookies', sh.cookie + '; path=/;\r\n');
+            }
+            if (!this.options.customHeaders) {
+                args.push('-headers', 'X-User-Agent: Model: MAG250; Link: WiFi\r\n');
+            }
+            // Stalker streams may not support Range/HEAD requests
+            args.push('-seekable', '0');
+        }
+
         args.push('-i', this.url);
 
         // Add seek offset if specified (as output option to avoid Range requests)
@@ -210,9 +238,12 @@ class TranscodeSession extends EventEmitter {
             args.push('-ss', String(this.options.seekOffset));
         }
 
-        // Map streams
-        args.push('-map', '0:v:0');
-        args.push('-map', '0:a:0?');
+        // Map only primary video/audio streams and explicitly drop subtitle/data streams.
+        // This avoids MKV subtitle tracks (PGS/VobSub/etc.) breaking HLS session startup.
+        const audioIdx = Number.isInteger(this.options.audioIdx) ? this.options.audioIdx : 0;
+        args.push('-map', '0:v:0?');
+        args.push('-map', `0:a:${audioIdx}?`);
+        args.push('-sn', '-dn');
 
         // Add video encoder and filters based on selected encoder OR copy
         if (videoMode === 'copy') {
@@ -236,6 +267,7 @@ class TranscodeSession extends EventEmitter {
         const audioChannels = this.options.audioChannels || 0;
         const audioMixPreset = this.options.audioMixPreset || 'auto';
         const isStereoAac = audioCodec.includes('aac') && audioChannels === 2;
+        const needsDownmix = audioChannels > 2;
 
         // Define pan filter presets for 5.1 -> Stereo downmix
         const AUDIO_MIX_FILTERS = {
@@ -256,16 +288,25 @@ class TranscodeSession extends EventEmitter {
             console.log(`[TranscodeSession ${this.id}] Audio: Auto (Smart Copy) - Source is Stereo AAC`);
             args.push('-c:a', 'copy');
         } else {
-            // Transcode to AAC with selected mix preset (default to ITU for 'auto')
+            // Transcode to browser-safe stereo AAC.
+            // Use a surround downmix only when the source actually has >2 channels.
             const mixPreset = (audioMixPreset === 'auto') ? 'itu' : audioMixPreset;
             const panFilter = AUDIO_MIX_FILTERS[mixPreset] || AUDIO_MIX_FILTERS.itu;
+            const targetBitrate = needsDownmix ? '256k' : '192k';
+            const audioFilter = needsDownmix
+                ? `${panFilter},aresample=async=1`
+                : 'aresample=async=1';
 
-            console.log(`[TranscodeSession ${this.id}] Audio: ${mixPreset.toUpperCase()} mix (${audioCodec} ${audioChannels}ch -> Stereo AAC)`);
+            console.log(
+                `[TranscodeSession ${this.id}] Audio: ${needsDownmix ? `${mixPreset.toUpperCase()} downmix` : 'Stereo normalize'} ` +
+                `(${audioCodec} ${audioChannels}ch -> Stereo AAC)`
+            );
             args.push(
                 '-c:a', 'aac',
+                '-ac', '2',
                 '-ar', '48000',
-                '-b:a', '192k',
-                '-af', `${panFilter},aresample=async=1`
+                '-b:a', targetBitrate,
+                '-af', audioFilter
             );
         }
 
@@ -557,6 +598,9 @@ class TranscodeSession extends EventEmitter {
         while (Date.now() - startTime < timeoutMs) {
             if (await this.isPlaylistReady()) {
                 return true;
+            }
+            if (this.status === 'error') {
+                throw new Error(this.error || 'Transcode session failed');
             }
             await new Promise(resolve => setTimeout(resolve, 200));
         }

@@ -3,6 +3,7 @@ const router = express.Router();
 const { sources } = require('../db');
 const { getDb } = require('../db/sqlite');
 const xtreamApi = require('../services/xtreamApi');
+const stalkerApi = require('../services/stalkerApi');
 const syncService = require('../services/syncService');
 const m3uParser = require('../services/m3uParser');
 
@@ -13,7 +14,8 @@ router.get('/', async (req, res) => {
         // Don't expose passwords in list view
         const sanitized = allSources.map(s => ({
             ...s,
-            password: s.password ? '••••••••' : null
+            password: s.password ? '••••••••' : null,
+            adult_password: s.adult_password ? '••••••••' : null
         }));
         res.json(sanitized);
     } catch (err) {
@@ -63,17 +65,32 @@ router.get('/:id', async (req, res) => {
 // Create source
 router.post('/', async (req, res) => {
     try {
-        const { type, name, url, username, password } = req.body;
+        const { type, name, url, username, password, mac, serial_number, device_id, device_id2, adult_password } = req.body;
 
         if (!type || !name || !url) {
             return res.status(400).json({ error: 'Type, name, and URL are required' });
         }
 
-        if (!['xtream', 'm3u', 'epg'].includes(type)) {
+        if (!['xtream', 'm3u', 'epg', 'stalker'].includes(type)) {
             return res.status(400).json({ error: 'Invalid source type' });
         }
 
-        const source = await sources.create({ type, name, url, username, password });
+        if (type === 'stalker' && !mac) {
+            return res.status(400).json({ error: 'MAC address is required for Stalker Portal' });
+        }
+
+        const sourceData = { type, name, url, username, password };
+
+        // Stalker-specific fields
+        if (type === 'stalker') {
+            sourceData.mac = mac;
+            sourceData.serial_number = serial_number || null;
+            sourceData.device_id = device_id || null;
+            sourceData.device_id2 = device_id2 || null;
+            sourceData.adult_password = adult_password || null;
+        }
+
+        const source = await sources.create(sourceData);
         // Trigger Sync
         syncService.syncSource(source.id).catch(console.error);
         res.status(201).json(source);
@@ -91,13 +108,24 @@ router.put('/:id', async (req, res) => {
             return res.status(404).json({ error: 'Source not found' });
         }
 
-        const { name, url, username, password } = req.body;
-        const updated = await sources.update(req.params.id, {
+        const { name, url, username, password, mac, serial_number, device_id, device_id2, adult_password } = req.body;
+        const updateData = {
             name: name || existing.name,
             url: url || existing.url,
             username: username !== undefined ? username : existing.username,
             password: password !== undefined ? password : existing.password
-        });
+        };
+
+        // Stalker-specific fields
+        if (existing.type === 'stalker') {
+            updateData.mac = mac !== undefined ? mac : existing.mac;
+            updateData.serial_number = serial_number !== undefined ? serial_number : existing.serial_number;
+            updateData.device_id = device_id !== undefined ? device_id : existing.device_id;
+            updateData.device_id2 = device_id2 !== undefined ? device_id2 : existing.device_id2;
+            updateData.adult_password = adult_password !== undefined ? adult_password : existing.adult_password;
+        }
+
+        const updated = await sources.update(req.params.id, updateData);
         // Trigger Sync (if critical fields changed? safely just trigger it)
         syncService.syncSource(parseInt(req.params.id)).catch(console.error);
         res.json(updated);
@@ -187,6 +215,15 @@ router.post('/:id/test', async (req, res) => {
 
         if (source.type === 'xtream') {
             const result = await xtreamApi.authenticate(source.url, source.username, source.password);
+            res.json({ success: true, data: result });
+        } else if (source.type === 'stalker') {
+            const result = await stalkerApi.testConnection(source.url, source.mac, {
+                serialNumber: source.serial_number,
+                deviceId: source.device_id,
+                deviceId2: source.device_id2,
+                username: source.username,
+                password: source.password
+            });
             res.json({ success: true, data: result });
         } else if (source.type === 'm3u') {
             const response = await fetch(source.url);

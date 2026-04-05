@@ -1567,6 +1567,8 @@ kbd {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .modal-header {
@@ -1595,6 +1597,8 @@ kbd {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  flex: 1;
+  min-height: 0;
 }
 
 .modal-footer {
@@ -1941,6 +1945,32 @@ kbd {
 .horizontal-scroll .empty-state {
   padding: var(--space-xl);
   min-height: 150px;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  padding: var(--space-xl) 0;
+  min-height: 200px;
+  color: var(--color-text-muted);
+}
+
+.loading-container .loading-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.loading-container .loading-text {
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+  margin: 0;
 }
 
 @keyframes spin {
@@ -4819,4 +4849,39 @@ kbd {
     font-size: 0.7rem;
     max-width: 70px;
   }
+}
+
+/* =====================================================
+   Stalker Portal Form Styles
+   ===================================================== */
+.form-divider {
+  display: flex;
+  align-items: center;
+  margin: var(--space-lg) 0 var(--space-md);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.form-divider::before,
+.form-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.form-divider span {
+  padding: 0 var(--space-md);
+}
+
+.form-row {
+  display: flex;
+  gap: var(--space-md);
+}
+
+.form-row .form-group {
+  flex: 1;
+  min-width: 0;
 }

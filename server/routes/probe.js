@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
+const { resolveStalkerUrl } = require('../services/stalkerResolver');
 
 /**
  * Probe endpoint - detects stream codecs and container
@@ -28,11 +29,12 @@ const BROWSER_AUDIO_CODECS = ['aac', 'mp3', 'opus', 'vorbis'];
 /**
  * Probe stream with ffprobe
  */
-function probeStream(url, ffprobePath, userAgent = null, timeout = 15000) {
+function probeStream(url, ffprobePath, userAgent = null, customHeaders = null, timeout = 15000) {
     return new Promise((resolve, reject) => {
         const args = [
             '-v', 'error',
-            '-user_agent', userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            '-user_agent', userAgent || 'VLC/3.0.16 LibVLC/3.0.16',
+            ...(customHeaders ? ['-headers', customHeaders] : []),
             '-print_format', 'json',
             '-show_streams',
             '-show_format',
@@ -140,9 +142,15 @@ function analyzeProbeResult(probeResult, url) {
 }
 
 router.get('/', async (req, res) => {
-    const { url, ua } = req.query;
+    let { url, ua, sourceType, sourceId } = req.query;
     if (!url) {
         return res.status(400).json({ error: 'URL parameter is required' });
+    }
+
+    // Resolve relative URLs (e.g., /api/proxy/stream?...) to absolute for ffprobe
+    if (url.startsWith('/')) {
+        const port = req.app.get('port') || req.socket.localPort || 3000;
+        url = `http://127.0.0.1:${port}${url}`;
     }
 
     const ffprobePath = req.app.locals.ffprobePath;
@@ -168,10 +176,34 @@ router.get('/', async (req, res) => {
         return res.json(cached.result);
     }
 
-    console.log(`[Probe] Probing: ${url.substring(0, 80)}... ${ua ? `(UA: ${ua})` : ''}`);
+    const isStalker = sourceType === 'stalker' || url.startsWith('stalker://') || url.includes('play/live.php') || url.includes('stalker');
+
+    let probeUserAgent = ua || (isStalker 
+        ? 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3'
+        : 'VLC/3.0.16 LibVLC/3.0.16');
 
     try {
-        const probeResult = await probeStream(url, ffprobePath, ua);
+        if (url.startsWith('stalker://')) {
+            console.log(`[Probe] Resolving stalker pseudo-URL: ${url}`);
+            url = await resolveStalkerUrl(url);
+            console.log(`[Probe] Resolved to: ${url.substring(0, 50)}...`);
+        }
+
+        let customHeaders = '';
+        if (isStalker) {
+            customHeaders = 'X-User-Agent: Model: MAG250; Link: WiFi\r\n';
+        } else {
+            try {
+                const parsedUrl = new URL(url);
+                customHeaders = `Referer: ${parsedUrl.protocol}//${parsedUrl.host}/\r\n`;
+            } catch (e) {
+                console.error("[Probe] Failed to parse URL for referer header", e.message);
+            }
+        }
+
+        console.log(`[Probe] Probing: ${url.substring(0, 80)}... ${probeUserAgent ? `(UA: ${probeUserAgent.substring(0, 30)}...)` : ''}`);
+
+        const probeResult = await probeStream(url, ffprobePath, probeUserAgent, customHeaders);
         const analysis = analyzeProbeResult(probeResult, url);
 
         // Cache result

@@ -27,6 +27,7 @@ class VideoPlayer {
         this.overlayDuration = 5000; // 5 seconds
         this.isUsingProxy = false;
         this.currentUrl = null;
+        this.isResettingVideo = false;
         this.settingsLoaded = false;
 
         // Settings - start with defaults, load from server async
@@ -661,7 +662,7 @@ class VideoPlayer {
                                 console.log('[HLS] Max retries reached, switching to proxy...');
                                 this.networkRetryCount = 0;
                                 this.isUsingProxy = true;
-                                const proxiedUrl = this.getProxiedUrl(this.currentUrl);
+                                const proxiedUrl = this.getProxiedUrl(this.currentUrl, this.currentChannel);
                                 this.hls.loadSource(proxiedUrl);
                                 this.hls.startLoad();
                             } else {
@@ -815,19 +816,38 @@ class VideoPlayer {
     async startTranscodeSession(url, options = {}) {
         try {
             console.log('[Player] Starting HLS transcode session...', options);
+            const body = { url, ...options };
+            // Pass source info so server can use proper headers for Stalker portals
+            if (this.currentChannel?.sourceType) {
+                body.sourceType = this.currentChannel.sourceType;
+                body.sourceId = this.currentChannel.sourceId;
+            }
             const res = await fetch('/api/transcode/session', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url, ...options })
+                body: JSON.stringify(body)
             });
-            if (!res.ok) throw new Error('Failed to start session');
+            if (!res.ok) {
+                let details = 'Failed to start session';
+                try {
+                    const err = await res.json();
+                    details = err.details || err.reason || err.error || details;
+                } catch (_) {
+                    // Ignore parse errors and fall back to generic message
+                }
+                throw new Error(details);
+            }
             const session = await res.json();
             this.currentSessionId = session.sessionId;
             return session.playlistUrl;
         } catch (err) {
             console.error('[Player] Session start failed:', err);
             // Fallback to direct transcode if session fails
-            return `/api/transcode?url=${encodeURIComponent(url)}`;
+            const params = new URLSearchParams({ url });
+            if (options.audioIdx !== undefined) params.set('audioIdx', String(options.audioIdx));
+            if (options.audioChannels !== undefined) params.set('audioChannels', String(options.audioChannels));
+            if (options.audioCodec) params.set('audioCodec', options.audioCodec);
+            return `/api/transcode?${params.toString()}`;
         }
     }
 
@@ -875,7 +895,12 @@ class VideoPlayer {
             if (this.settings.autoTranscode) {
                 console.log('[Player] Auto Transcode enabled. Probing stream...');
                 try {
-                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
+                    // Include source info for Stalker portals so probe uses correct User-Agent
+                    let probeQuery = `/api/probe?url=${encodeURIComponent(streamUrl)}`;
+                    if (channel.sourceType === 'stalker' && channel.sourceId) {
+                        probeQuery += `&sourceType=stalker&sourceId=${channel.sourceId}`;
+                    }
+                    const probeRes = await fetch(probeQuery);
                     const info = await probeRes.json();
                     console.log(`[Player] Probe result: video=${info.video}, audio=${info.audio}, ${info.width}x${info.height}, compatible=${info.compatible}`);
 
@@ -935,12 +960,9 @@ class VideoPlayer {
                         // Raw .ts container - use remux
                         console.log('[Player] Auto: Using remux (.ts container)');
                         this.updateTranscodeStatus('remuxing', 'Remux (Auto)');
-                        const remuxUrl = `/api/remux?url=${encodeURIComponent(streamUrl)}`;
+                        const remuxUrl = this.getRemuxUrl(streamUrl, channel);
                         this.currentUrl = remuxUrl;
-                        this.video.src = remuxUrl;
-                        this.video.play().catch(e => {
-                            if (e.name !== 'AbortError') console.log('[Player] Autoplay prevented:', e);
-                        });
+                        this.playNativeSource(remuxUrl, 'remux');
                         this.updateNowPlaying(channel);
                         this.showNowPlayingOverlay();
                         this.fetchEpgData(channel);
@@ -1031,10 +1053,12 @@ class VideoPlayer {
             // 2. Known CORS-restricted domains (like Pluto TV)
             // Note: Xtream sources are NOT auto-proxied because many providers IP-lock streams
             const proxyRequiredDomains = ['pluto.tv'];
-            const needsProxy = this.settings.forceProxy || proxyRequiredDomains.some(domain => streamUrl.includes(domain));
+            // Stalker portal streams always need proxy (MAG STB headers required)
+            const isStalkerStream = channel.sourceType === 'stalker';
+            const needsProxy = this.settings.forceProxy || isStalkerStream || proxyRequiredDomains.some(domain => streamUrl.includes(domain));
 
             this.isUsingProxy = needsProxy;
-            const finalUrl = needsProxy ? this.getProxiedUrl(streamUrl) : streamUrl;
+            const finalUrl = needsProxy ? this.getProxiedUrl(streamUrl, channel) : streamUrl;
 
             // Detect if this is likely an HLS stream (has .m3u8 in URL)
             const looksLikeHls = finalUrl.includes('.m3u8') || finalUrl.includes('m3u8');
@@ -1054,11 +1078,8 @@ class VideoPlayer {
                 console.log('[Player] Force Remux enabled. Routing through FFmpeg remux...');
                 console.log('[Player] Stream type:', isRawTs ? 'Raw TS' : 'Extension-less (assumed TS)');
                 this.updateTranscodeStatus('remuxing', 'Remux (Force)');
-                const remuxUrl = this.getRemuxUrl(streamUrl);
-                this.video.src = remuxUrl;
-                this.video.play().catch(e => {
-                    if (e.name !== 'AbortError') console.log('[Player] Autoplay prevented:', e);
-                });
+                const remuxUrl = this.getRemuxUrl(streamUrl, channel);
+                this.playNativeSource(remuxUrl, 'remux');
 
                 // Update UI and dispatch events
                 this.updateNowPlaying(channel);
@@ -1111,7 +1132,7 @@ class VideoPlayer {
                         if (isCorsLikely && !this.isUsingProxy && !isLocalApi) {
                             console.log('CORS/Network error detected, retrying via proxy...', data.details);
                             this.isUsingProxy = true;
-                            this.hls.loadSource(this.getProxiedUrl(this.currentUrl));
+                            this.hls.loadSource(this.getProxiedUrl(this.currentUrl, this.currentChannel));
                             this.hls.startLoad();
                         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
                             // Fatal media error - try recovery with cooldown
@@ -1147,13 +1168,13 @@ class VideoPlayer {
                 this.video.canPlayType('application/vnd.apple.mpegurl') === 'maybe') {
                 // Priority 2: Native HLS support (Safari on iOS/macOS where HLS.js may not work)
                 this.updateTranscodeStatus('direct', 'Direct Native');
-                this.video.src = finalUrl;
+                this.playNativeSource(finalUrl, 'native playback');
                 this.video.play().catch(e => {
                     if (e.name === 'AbortError') return; // Ignore interruption by new load
                     console.log('Autoplay prevented, trying proxy if CORS error:', e);
                     if (!this.isUsingProxy) {
                         this.isUsingProxy = true;
-                        this.video.src = this.getProxiedUrl(streamUrl);
+                        this.playNativeSource(this.getProxiedUrl(streamUrl, channel), 'proxy playback');
                         this.video.play().catch(err => {
                             if (err.name !== 'AbortError') console.error('Proxy play failed:', err);
                         });
@@ -1162,10 +1183,7 @@ class VideoPlayer {
             } else {
                 // Priority 3: Try direct playback for non-HLS streams
                 this.updateTranscodeStatus('direct', 'Direct Play');
-                this.video.src = finalUrl;
-                this.video.play().catch(e => {
-                    if (e.name !== 'AbortError') console.log('Autoplay prevented:', e);
-                });
+                this.playNativeSource(finalUrl, 'direct play');
             }
 
             // Update now playing info
@@ -1190,6 +1208,11 @@ class VideoPlayer {
      * Helper to play HLS stream (reduces duplication)
      */
     playHls(url) {
+        if (url && url.startsWith('/api/transcode?')) {
+            this.playNativeSource(url, 'transcode fallback');
+            return;
+        }
+
         if (this.hls) {
             this.hls.destroy();
         }
@@ -1209,6 +1232,27 @@ class VideoPlayer {
                 // Simple error handling for forced HLS/transcode modes
                 console.error('Fatal HLS error in transcode mode:', data);
                 this.hls.destroy();
+            }
+        });
+    }
+
+    playNativeSource(url, context = 'playback') {
+        if (!url) {
+            console.error(`[Player] Cannot start ${context}: empty URL`);
+            return;
+        }
+
+        if (this.hls) {
+            this.hls.destroy();
+            this.hls = null;
+        }
+
+        this.isResettingVideo = false;
+        this.video.src = url;
+        this.video.load();
+        this.video.play().catch(e => {
+            if (e.name !== 'AbortError') {
+                console.log(`[Player] ${context} prevented:`, e);
             }
         });
     }
@@ -1353,14 +1397,22 @@ class VideoPlayer {
     /**
      * Get proxied URL for a stream
      */
-    getProxiedUrl(url) {
-        return `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+    getProxiedUrl(url, channel = null) {
+        // Already a proxy URL (e.g., stalker streams) — don't double-wrap
+        if (url.startsWith('/api/proxy/stream')) return url;
+        let proxyUrl = `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+        // Add Stalker params so proxy uses MAG STB headers
+        if (channel?.sourceType === 'stalker' && channel?.sourceId) {
+            proxyUrl += `&stalker=1&sourceId=${channel.sourceId}`;
+        }
+        return proxyUrl;
     }
 
     /**
      * Get transcoded URL for a stream (audio transcoding for browser compatibility)
      */
     getTranscodeUrl(url) {
+        // Proxy URLs start with / — pass as-is, server resolves to absolute
         return `/api/transcode?url=${encodeURIComponent(url)}`;
     }
 
@@ -1368,8 +1420,12 @@ class VideoPlayer {
      * Get remuxed URL for a stream (container conversion only, no re-encoding)
      * Used for raw .ts streams that browsers can't play directly
      */
-    getRemuxUrl(url) {
-        return `/api/remux?url=${encodeURIComponent(url)}`;
+    getRemuxUrl(url, channel = null) {
+        const proxyRequiredDomains = ['pluto.tv'];
+        const needsProxy = channel?.sourceType === 'stalker' ||
+            proxyRequiredDomains.some(domain => url.includes(domain));
+        const inputUrl = needsProxy ? this.getProxiedUrl(url, channel) : url;
+        return `/api/remux?url=${encodeURIComponent(inputUrl)}`;
     }
 
     /**
@@ -1396,7 +1452,8 @@ class VideoPlayer {
             this.hls = null;
         }
         this.video.pause();
-        this.video.src = '';
+        this.isResettingVideo = true;
+        this.video.removeAttribute('src');
         this.video.load();
 
         // Reset UI to idle state

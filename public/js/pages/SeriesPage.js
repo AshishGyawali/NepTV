@@ -105,7 +105,7 @@ class SeriesPage {
     async loadSources() {
         try {
             const allSources = await API.sources.getAll();
-            this.sources = allSources.filter(s => s.type === 'xtream' && s.enabled);
+            this.sources = allSources.filter(s => (s.type === 'xtream' || s.type === 'stalker') && s.enabled);
 
             this.sourceSelect.innerHTML = '<option value="">All Sources</option>';
             this.sources.forEach(s => {
@@ -174,7 +174,18 @@ class SeriesPage {
 
     async loadSeries() {
         this.isLoading = true;
-        this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div></div>';
+
+        const hasStalker = this.sources.some(s => s.type === 'stalker');
+        const loadingMsg = hasStalker
+            ? 'Fetching series from portal... This may take a moment.'
+            : 'Loading series...';
+
+        this.container.innerHTML = `
+            <div class="loading-container">
+                <div class="loading-spinner"></div>
+                <p class="loading-text">${loadingMsg}</p>
+            </div>
+        `;
 
         try {
             this.seriesList = [];
@@ -432,7 +443,11 @@ class SeriesPage {
 
         try {
             // Get stream URL for episode (use 'series' type)
-            const result = await API.proxy.xtream.getStreamUrl(sourceId, episodeId, 'series', container);
+            const source = this.sources.find(s => s.id === sourceId);
+            const isStalker = source && source.type === 'stalker';
+            const result = isStalker
+                ? { url: `stalker://${sourceId}/${episodeId}/series` }
+                : await API.proxy.xtream.getStreamUrl(sourceId, episodeId, 'series', container);
 
             if (result && result.url) {
                 // Play in dedicated Watch page

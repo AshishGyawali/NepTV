@@ -3,6 +3,7 @@ const router = express.Router();
 const { sources } = require('../db');
 const { getDb } = require('../db/sqlite'); // Import SQLite
 const xtreamApi = require('../services/xtreamApi');
+const stalkerApi = require('../services/stalkerApi');
 const epgParser = require('../services/epgParser');
 const cache = require('../services/cache');
 const path = require('path');
@@ -15,6 +16,16 @@ const { Readable } = require('stream');
 
 // Default cache max age in hours
 const DEFAULT_MAX_AGE_HOURS = 24;
+
+// MAG STB headers for Stalker portal stream proxying
+const STALKER_STB_USER_AGENT = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG250/1.1.0';
+
+// Relaxed HTTPS agent for Stalker streams with outdated TLS
+const stalkerHttpsAgent = new https.Agent({
+    rejectUnauthorized: false,
+    minVersion: 'TLSv1',
+    ciphers: 'ALL'
+});
 
 // Helper to get formatted category list from DB
 function getCategoriesFromDb(sourceId, type, includeHidden = false) {
@@ -140,13 +151,35 @@ router.get('/xtream/:sourceId/vod_categories', async (req, res) => {
     }
 });
 
-// VOD Streams
+// VOD Streams (with on-demand stalker loading)
 router.get('/xtream/:sourceId/vod_streams', async (req, res) => {
     try {
         const sourceId = parseInt(req.params.sourceId);
         const categoryId = req.query.category_id;
         const includeHidden = req.query.includeHidden === 'true';
-        const streams = getStreamsFromDb(sourceId, 'movie', categoryId, includeHidden);
+
+        let streams = getStreamsFromDb(sourceId, 'movie', categoryId, includeHidden);
+
+        // Stalker on-demand: if no items in DB, fetch from portal
+        if (streams.length === 0) {
+            const source = await sources.getById(sourceId);
+            if (source && source.type === 'stalker') {
+                const syncService = require('../services/syncService');
+                if (categoryId) {
+                    // Fetch single category
+                    await syncService.stalkerOnDemandFetch(source, 'movie', categoryId);
+                } else {
+                    // No category selected: fetch first few categories to populate
+                    const cats = getCategoriesFromDb(sourceId, 'movie', includeHidden);
+                    const toFetch = cats.slice(0, 5); // Fetch first 5 categories
+                    for (const cat of toFetch) {
+                        await syncService.stalkerOnDemandFetch(source, 'movie', cat.category_id);
+                    }
+                }
+                streams = getStreamsFromDb(sourceId, 'movie', categoryId, includeHidden);
+            }
+        }
+
         res.json(streams);
     } catch (err) {
         console.error(err);
@@ -167,13 +200,33 @@ router.get('/xtream/:sourceId/series_categories', async (req, res) => {
     }
 });
 
-// Series
+// Series (with on-demand stalker loading)
 router.get('/xtream/:sourceId/series', async (req, res) => {
     try {
         const sourceId = parseInt(req.params.sourceId);
         const categoryId = req.query.category_id;
         const includeHidden = req.query.includeHidden === 'true';
-        const streams = getStreamsFromDb(sourceId, 'series', categoryId, includeHidden);
+
+        let streams = getStreamsFromDb(sourceId, 'series', categoryId, includeHidden);
+
+        // Stalker on-demand: if no items in DB, fetch from portal
+        if (streams.length === 0) {
+            const source = await sources.getById(sourceId);
+            if (source && source.type === 'stalker') {
+                const syncService = require('../services/syncService');
+                if (categoryId) {
+                    await syncService.stalkerOnDemandFetch(source, 'series', categoryId);
+                } else {
+                    const cats = getCategoriesFromDb(sourceId, 'series', includeHidden);
+                    const toFetch = cats.slice(0, 5);
+                    for (const cat of toFetch) {
+                        await syncService.stalkerOnDemandFetch(source, 'series', cat.category_id);
+                    }
+                }
+                streams = getStreamsFromDb(sourceId, 'series', categoryId, includeHidden);
+            }
+        }
+
         res.json(streams);
     } catch (err) {
         console.error(err);
@@ -182,7 +235,7 @@ router.get('/xtream/:sourceId/series', async (req, res) => {
 });
 
 // Series Info (Episodes)
-// Proxy series info request
+// Proxy series info request (supports xtream and stalker sources)
 router.get('/xtream/:sourceId/series_info', async (req, res) => {
     try {
         const source = await sources.getById(req.params.sourceId);
@@ -192,12 +245,81 @@ router.get('/xtream/:sourceId/series_info', async (req, res) => {
         if (!seriesId) return res.status(400).send('series_id required');
 
         const cacheKey = `series_info_${seriesId}`;
-        const cached = cache.get('xtream', source.id, cacheKey, 3600000);
+        const cacheType = source.type === 'stalker' ? 'stalker' : 'xtream';
+        const cached = cache.get(cacheType, source.id, cacheKey, 3600000);
         if (cached) return res.json(cached);
 
-        const api = xtreamApi.createFromSource(source);
-        const data = await api.getSeriesInfo(seriesId);
-        cache.set('xtream', source.id, cacheKey, data);
+        let data;
+        if (source.type === 'stalker') {
+            const api = stalkerApi.createFromSource(source);
+            data = await api.getSeriesInfo(seriesId);
+
+            if (!data) {
+                // Scenario B (Indian/VOD portals): series item is directly playable
+                const db = getDb();
+                const item = db.prepare(
+                    'SELECT * FROM playlist_items WHERE source_id = ? AND item_id = ? AND type = ?'
+                ).get(source.id, seriesId, 'series');
+
+                if (item) {
+                    const itemData = JSON.parse(item.data || '{}');
+                    data = {
+                        episodes: {
+                            '1': [{
+                                id: item.item_id,
+                                episode_num: 1,
+                                title: item.name || 'Play',
+                                container_extension: item.container_extension || 'mp4',
+                                duration: '',
+                                cmd: itemData.cmd
+                            }]
+                        }
+                    };
+                } else {
+                    return res.json({ episodes: {} });
+                }
+            }
+
+            // Save episode data to DB so the stalker stream endpoint can resolve them.
+            // Stores cmd, parentCmd, and seriesNumber for the "Series Array" fallback.
+            if (data && data.episodes) {
+                const db = getDb();
+                const stmt = db.prepare(`
+                    INSERT INTO playlist_items (id, source_id, item_id, type, name, category_id, stream_icon, container_extension, data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data
+                `);
+                const insertBatch = db.transaction((eps) => {
+                    for (const ep of eps) {
+                        // Episode is playable if it has its own cmd OR a parentCmd
+                        if (ep.cmd || ep.parentCmd) {
+                            stmt.run(
+                                `${source.id}:${ep.id}`,
+                                source.id,
+                                String(ep.id),
+                                'series',
+                                ep.title || `Episode ${ep.episode_num}`,
+                                seriesId,
+                                ep.cover || null,
+                                ep.container_extension || 'mp4',
+                                JSON.stringify({
+                                    cmd: ep.cmd || null,
+                                    parentCmd: ep.parentCmd || null,
+                                    seriesNumber: ep.seriesNumber || null
+                                })
+                            );
+                        }
+                    }
+                });
+                const allEps = Object.values(data.episodes).flat();
+                insertBatch(allEps);
+            }
+        } else {
+            const api = xtreamApi.createFromSource(source);
+            data = await api.getSeriesInfo(seriesId);
+        }
+
+        cache.set(cacheType, source.id, cacheKey, data);
         res.json(data);
     } catch (err) {
         res.status(502).json({ error: 'Upstream error', details: err.message });
@@ -264,6 +386,75 @@ router.get('/xtream/:sourceId/stream/:streamId/:type', async (req, res) => {
     }
 });
 
+
+// --- Stalker Portal Proxy Routes --- //
+
+// Get stream URL for Stalker portal (resolves via create_link)
+router.get('/stalker/:sourceId/stream/:streamId/:type', async (req, res) => {
+    try {
+        const source = await sources.getById(req.params.sourceId);
+        if (!source || source.type !== 'stalker') {
+            return res.status(404).json({ error: 'Stalker source not found' });
+        }
+
+        const { streamId, type } = req.params;
+
+        // Get the item data from DB to find the cmd
+        const db = getDb();
+        const itemType = type === 'movie' ? 'movie' : type === 'series' ? 'series' : 'live';
+        const item = db.prepare(
+            'SELECT data FROM playlist_items WHERE source_id = ? AND item_id = ? AND type = ?'
+        ).get(parseInt(req.params.sourceId), streamId, itemType);
+
+        if (!item) {
+            return res.status(404).json({ error: 'Stream not found' });
+        }
+
+        const itemData = JSON.parse(item.data || '{}');
+        const cmd = itemData.cmd;
+        const parentCmd = itemData.parentCmd;
+        const seriesNumber = itemData.seriesNumber;
+
+        // For series: need either own cmd or parentCmd
+        // For live/movie: need cmd
+        if (!cmd && !parentCmd) {
+            return res.status(400).json({ error: 'No stream command found for this item' });
+        }
+
+        // Use cached URL if available (short TTL - 5 minutes)
+        const cacheKey = `stalker_link_${streamId}_${type}`;
+        const cached = cache.get('stalker', req.params.sourceId, cacheKey, 300000);
+        if (cached) {
+            return res.json({ url: cached });
+        }
+
+        // Create the API instance and resolve the link
+        const api = stalkerApi.createFromSource(source);
+
+        let streamUrl;
+        if (type === 'live') {
+            streamUrl = await api.createLiveLink(cmd);
+        } else if (type === 'series') {
+            // Use episode's own cmd if available, otherwise parent season's cmd + series number
+            const effectiveCmd = cmd || parentCmd;
+            const effectiveSeriesNum = !cmd ? seriesNumber : null;
+            streamUrl = await api.createSeriesLink(effectiveCmd, effectiveSeriesNum);
+        } else {
+            streamUrl = await api.createVodLink(cmd);
+        }
+
+        // Cache the resolved URL
+        cache.set('stalker', req.params.sourceId, cacheKey, streamUrl);
+
+        res.json({ url: streamUrl });
+    } catch (err) {
+        console.error('Stalker stream URL error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Stalker portal categories/streams use the same DB-backed endpoints as xtream
+// (getCategoriesFromDb / getStreamsFromDb already work for any source type)
 
 // --- Other Proxy Routes --- //
 
@@ -608,19 +799,67 @@ router.get('/stream', async (req, res) => {
                 return res.status(400).json({ error: 'URL required' });
             }
 
+            // Resolve stalker pseudo-URLs
+            if (url.startsWith('stalker://')) {
+                const { resolveStalkerUrl } = require('../services/stalkerResolver');
+                url = await resolveStalkerUrl(url);
+            }
+
+            // Detect Stalker stream requests (need MAG headers + relaxed TLS)
+            const isStalker = req.query.stalker === '1';
+            let stalkerMac = req.query.mac;
+            let stalkerPortal = req.query.portal;
+
+            // If sourceId provided, look up MAC and portal from the source
+            if (isStalker && !stalkerMac && req.query.sourceId) {
+                try {
+                    const source = await sources.getById(req.query.sourceId);
+                    if (source && source.type === 'stalker') {
+                        stalkerMac = source.mac;
+                        stalkerPortal = source.url.replace(/\/+$/, '').replace(/\/c\/?$/, '') + '/c/';
+                    }
+                } catch (err) {
+                    console.warn('[Proxy] Failed to look up stalker source:', err.message);
+                }
+            }
+
             // Forward some headers to be more "transparent" back to the origin
             // Pluto TV uses multiple domains for content delivery
             const plutoDomains = ['pluto.tv', 'pluto.io', 'plutotv.net', 'siloh.pluto.tv', 'service-stitcher'];
             const isPluto = plutoDomains.some(domain => url.includes(domain));
 
-            const headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                // Using https and matching the origin of the request
-                'Origin': isPluto ? 'https://pluto.tv' : new URL(url).origin,
-                'Referer': isPluto ? 'https://pluto.tv/' : new URL(url).origin + '/'
-            };
+            let headers;
+            let fetchOptions = {};
+
+            if (isStalker) {
+                // Use MAG STB headers for Stalker portal streams
+                const encodedMac = stalkerMac ? encodeURIComponent(stalkerMac) : '';
+                headers = {
+                    'User-Agent': STALKER_STB_USER_AGENT,
+                    'X-User-Agent': 'Model: MAG250; Link: WiFi',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Connection': 'keep-alive',
+                    'Referer': stalkerPortal || new URL(url).origin + '/',
+                };
+                if (stalkerMac) {
+                    headers['Cookie'] = `mac=${encodedMac}; stb_lang=en; timezone=America/New_York`;
+                }
+                // Use relaxed TLS agent for Stalker streams
+                if (url.startsWith('https')) {
+                    fetchOptions.dispatcher = undefined; // Node fetch doesn't use dispatcher the same way
+                    // For Node.js built-in fetch, we need to use the agent option
+                    // Since Node 18+ fetch doesn't support agent directly, we use http/https module
+                }
+            } else {
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Origin': isPluto ? 'https://pluto.tv' : new URL(url).origin,
+                    'Referer': isPluto ? 'https://pluto.tv/' : new URL(url).origin + '/'
+                };
+            }
 
             // Forward Range header for video seeking support
             const rangeHeader = req.get('range');
@@ -628,11 +867,54 @@ router.get('/stream', async (req, res) => {
                 headers['Range'] = rangeHeader;
             }
 
-            const response = await fetch(url, { headers });
+            // Use appropriate fetch method based on source type
+            let response;
+            if (isStalker && url.startsWith('https')) {
+                // Use Node.js https module with relaxed TLS for Stalker HTTPS streams
+                response = await new Promise((resolve, reject) => {
+                    const parsedUrl = new URL(url);
+                    const reqOptions = {
+                        hostname: parsedUrl.hostname,
+                        port: parsedUrl.port || 443,
+                        path: parsedUrl.pathname + parsedUrl.search,
+                        method: 'GET',
+                        headers: headers,
+                        agent: stalkerHttpsAgent,
+                        timeout: 30000
+                    };
+
+                    const httpsReq = https.request(reqOptions, (httpsRes) => {
+                        // Convert to fetch-like response
+                        resolve({
+                            ok: httpsRes.statusCode >= 200 && httpsRes.statusCode < 400,
+                            status: httpsRes.statusCode,
+                            statusText: httpsRes.statusMessage,
+                            headers: {
+                                get: (name) => httpsRes.headers[name.toLowerCase()] || null
+                            },
+                            body: httpsRes,
+                            url: url
+                        });
+                    });
+
+                    httpsReq.on('error', reject);
+                    httpsReq.on('timeout', () => {
+                        httpsReq.destroy();
+                        reject(new Error('Stalker stream request timed out'));
+                    });
+                    httpsReq.end();
+                });
+            } else {
+                response = await fetch(url, { headers });
+            }
 
             // Retry on 5xx errors (transient upstream issues)
             if (response.status >= 500 && attempt < maxRetries) {
                 console.log(`[Proxy] Upstream 5xx error (attempt ${attempt}/${maxRetries}), retrying in 500ms...`);
+                // Consume body to free resources
+                if (response.body && typeof response.body.resume === 'function') {
+                    response.body.resume();
+                }
                 await new Promise(r => setTimeout(r, 500));
                 continue;
             }
@@ -640,8 +922,20 @@ router.get('/stream', async (req, res) => {
             if (!response.ok) {
                 console.error(`Upstream error for ${url.substring(0, 80)}...: ${response.status} ${response.statusText}`);
                 if (response.status === 403) {
-                    const errorBody = await response.text().catch(() => 'N/A');
-                    console.error(`403 Response body: ${errorBody.substring(0, 200)}`);
+                    try {
+                        // Handle both fetch Response and Node IncomingMessage
+                        let errorBody = 'N/A';
+                        if (typeof response.text === 'function') {
+                            errorBody = await response.text();
+                        } else if (response.body) {
+                            const chunks = [];
+                            for await (const chunk of response.body) {
+                                chunks.push(chunk);
+                            }
+                            errorBody = Buffer.concat(chunks).toString('utf-8');
+                        }
+                        console.error(`403 Response body: ${errorBody.substring(0, 200)}`);
+                    } catch (e) { /* ignore */ }
                 }
                 return res.status(response.status).send(`Failed to fetch stream: ${response.statusText}`);
             }
@@ -707,6 +1001,11 @@ router.get('/stream', async (req, res) => {
                 const finalUrlObj = new URL(finalUrl);
                 const baseUrl = finalUrlObj.origin + finalUrlObj.pathname.substring(0, finalUrlObj.pathname.lastIndexOf('/') + 1);
 
+                // Build stalker param suffix for sub-resource URLs
+                const stalkerSuffix = isStalker
+                    ? `&stalker=1${stalkerMac ? `&mac=${encodeURIComponent(stalkerMac)}` : ''}${stalkerPortal ? `&portal=${encodeURIComponent(stalkerPortal)}` : ''}`
+                    : '';
+
                 manifest = manifest.split('\n').map(line => {
                     const trimmed = line.trim();
                     if (trimmed === '' || trimmed.startsWith('#')) {
@@ -716,7 +1015,7 @@ router.get('/stream', async (req, res) => {
                             return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
                                 try {
                                     const absoluteUrl = new URL(p1, baseUrl).href;
-                                    return `URI="${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}"`;
+                                    return `URI="${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}${stalkerSuffix}"`;
                                 } catch (e) {
                                     return match;
                                 }
@@ -733,30 +1032,41 @@ router.get('/stream', async (req, res) => {
                         } else {
                             absoluteUrl = new URL(trimmed, baseUrl).href;
                         }
-                        return `${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}`;
+                        return `${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}${stalkerSuffix}`;
                     } catch (e) { return line; }
                 }).join('\n');
 
                 return res.send(manifest);
             }
 
-            // Binary content (Video Segment or Key): Collect and send
-            console.log(`[Proxy] Serving binary content (${contentType})`);
+            // Binary content should be streamed through, not buffered in memory.
+            // Buffering whole MP4 responses breaks native direct-play and causes endless buffering.
+            console.log(`[Proxy] Streaming binary content (${contentType})`);
             res.set('Content-Type', contentType || 'application/octet-stream');
+            if (typeof res.flushHeaders === 'function') {
+                res.flushHeaders();
+            }
 
-            // For small files (like encryption keys), collect all data and send at once
-            // This ensures proper Content-Length and response completion
-            const chunks = [firstChunk];
+            if (!res.write(firstChunk)) {
+                await new Promise(resolve => res.once('drain', resolve));
+            }
+
             let result = await iterator.next();
             while (!result.done) {
-                chunks.push(Buffer.from(result.value));
+                if (res.destroyed || res.writableEnded) {
+                    break;
+                }
+
+                const chunk = Buffer.from(result.value);
+                if (!res.write(chunk)) {
+                    await new Promise(resolve => res.once('drain', resolve));
+                }
                 result = await iterator.next();
             }
-            const fullContent = Buffer.concat(chunks);
 
-            // Set Content-Length for proper client handling
-            res.set('Content-Length', fullContent.length);
-            res.send(fullContent);
+            if (!res.writableEnded) {
+                res.end();
+            }
             return; // Success - exit the retry loop
 
         } catch (err) {
