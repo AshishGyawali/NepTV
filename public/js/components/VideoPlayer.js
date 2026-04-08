@@ -807,10 +807,13 @@ class VideoPlayer {
             if (this.settings.autoTranscode) {
                 console.log('[Player] Auto Transcode enabled. Probing stream...');
                 try {
-                    // Include source info for Stalker portals so probe uses correct User-Agent
-                    let probeQuery = `/api/probe?url=${encodeURIComponent(streamUrl)}`;
-                    if (channel.sourceType === 'stalker' && channel.sourceId) {
-                        probeQuery += `&sourceType=stalker&sourceId=${channel.sourceId}`;
+                    // Include source info so probe uses correct User-Agent
+                    let probeQuery = `/api/probe?url=${encodeURIComponent(streamUrl)}&isLive=1`;
+                    if (channel.sourceType) {
+                        probeQuery += `&sourceType=${channel.sourceType}`;
+                    }
+                    if (channel.sourceId) {
+                        probeQuery += `&sourceId=${channel.sourceId}`;
                     }
                     const probeRes = await fetch(probeQuery);
                     const info = await probeRes.json();
@@ -1259,7 +1262,7 @@ class VideoPlayer {
     getProxiedUrl(url, channel = null) {
         // Already a proxy URL (e.g., stalker streams) — don't double-wrap
         if (url.startsWith('/api/proxy/stream')) return url;
-        let proxyUrl = `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+        let proxyUrl = `/api/proxy/stream?url=${encodeURIComponent(url)}&streamType=live`;
         // Add Stalker params so proxy uses MAG STB headers
         if (channel?.sourceType === 'stalker' && channel?.sourceId) {
             proxyUrl += `&stalker=1&sourceId=${channel.sourceId}`;

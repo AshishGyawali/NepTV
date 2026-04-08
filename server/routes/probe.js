@@ -176,11 +176,21 @@ router.get('/', async (req, res) => {
         return res.json(cached.result);
     }
 
-    const isStalker = sourceType === 'stalker' || url.startsWith('stalker://') || url.includes('play/live.php') || url.includes('stalker');
+    const isStalker = sourceType === 'stalker' || url.startsWith('stalker://');
+    const isLive = req.query.isLive === '1' || req.query.isLive === 'true';
 
-    let probeUserAgent = ua || (isStalker 
-        ? 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3'
-        : 'VLC/3.0.16 LibVLC/3.0.16');
+    // Explicit intent-based UA (same matrix as proxy and transcode)
+    let probeUserAgent;
+    if (ua) {
+        probeUserAgent = ua; // Explicit UA from frontend overrides everything
+    } else if (isStalker) {
+        probeUserAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
+    } else if (isLive) {
+        // AppleCoreMedia master key - bypasses both 405 and 401
+        probeUserAgent = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
+    } else {
+        probeUserAgent = 'VLC/3.0.21 LibVLC/3.0.21';
+    }
 
     try {
         if (url.startsWith('stalker://')) {
@@ -191,10 +201,10 @@ router.get('/', async (req, res) => {
 
         let customHeaders = '';
         if (isStalker) {
-            customHeaders = 'X-User-Agent: Model: MAG250; Link: WiFi\r\n';
+            customHeaders = 'X-User-Agent: model=MAG250;version=2.18.02-r3\r\n';
         }
 
-        console.log(`[Probe] Probing: ${url.substring(0, 80)}... ${probeUserAgent ? `(UA: ${probeUserAgent.substring(0, 30)}...)` : ''}`);
+        console.log(`[Probe] Probing: ${url.substring(0, 80)}... (UA: ${probeUserAgent.substring(0, 30)}...)`);
 
         const probeResult = await probeStream(url, ffprobePath, probeUserAgent, customHeaders);
         const analysis = analyzeProbeResult(probeResult, url);

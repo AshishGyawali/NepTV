@@ -915,38 +915,56 @@ router.get('/stream', async (req, res) => {
             const plutoDomains = ['pluto.tv', 'pluto.io', 'plutotv.net', 'siloh.pluto.tv', 'service-stitcher'];
             const isPluto = plutoDomains.some(domain => url.includes(domain));
 
-            let headers;
+            // 1. Capture explicit intent from the frontend request
+            const streamType = req.query.streamType || 'unknown'; // 'live' or 'vod'
+
+            // 2. Base Headers
+            let headers = {
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Connection': 'keep-alive'
+            };
             let fetchOptions = {};
 
+            // 3. The Disguise Matrix (No URL guessing!)
             if (isStalker) {
-                // Use MAG STB headers for Stalker portal streams
-                const encodedMac = stalkerMac ? encodeURIComponent(stalkerMac) : '';
-                headers = {
-                    'User-Agent': STALKER_STB_USER_AGENT,
-                    'X-User-Agent': 'Model: MAG250; Link: WiFi',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Connection': 'keep-alive',
-                    'Referer': stalkerPortal || new URL(url).origin + '/',
-                };
+                // Rule A: Pure Stalker MUST use MAG250.
+                headers['User-Agent'] = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
+                headers['X-User-Agent'] = 'model=MAG250;version=2.18.02-r3';
+                headers['Referer'] = new URL(url).origin + '/';
+
+                // Inject Stalker MAC cookie if available
                 if (stalkerMac) {
-                    headers['Cookie'] = `mac=${encodedMac}; stb_lang=en; timezone=America/New_York`;
+                    const encodedMac = encodeURIComponent(stalkerMac);
+                    headers['Cookie'] = `mac=${encodedMac}; stb_lang=en; timezone=America/Edmonton`;
                 }
-                // Use relaxed TLS agent for Stalker streams
+
+                // Use relaxed TLS agent for Stalker HTTPS streams
                 if (url.startsWith('https')) {
-                    fetchOptions.dispatcher = undefined; // Node fetch doesn't use dispatcher the same way
-                    // For Node.js built-in fetch, we need to use the agent option
-                    // Since Node 18+ fetch doesn't support agent directly, we use http/https module
+                    fetchOptions.dispatcher = undefined;
                 }
+            } else if (streamType === 'live') {
+                // Rule B: Xtream Live TV - THE APPLECOREMEDIA MASTER KEY
+                // Bypasses 405 (Anti-Scraper) AND 401 (Stalker Auth Traps).
+                // Nginx firewalls whitelist this because blocking it breaks Apple TV/iOS.
+                headers['User-Agent'] = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
+            } else if (streamType === 'vod') {
+                // Rule C: Xtream VODs & Series MUST use a Media Player UA.
+                headers['User-Agent'] = 'VLC/3.0.21 LibVLC/3.0.21';
+                // Do NOT send Referer or Origin for VODs
             } else {
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Origin': isPluto ? 'https://pluto.tv' : new URL(url).origin,
-                    'Referer': isPluto ? 'https://pluto.tv/' : new URL(url).origin + '/'
-                };
+                // Ultimate fallback if intent is missing (Pluto TV, M3U, etc.)
+                headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+                // Pluto TV needs Origin/Referer
+                if (isPluto) {
+                    headers['Origin'] = 'https://pluto.tv';
+                    headers['Referer'] = 'https://pluto.tv/';
+                }
             }
+
+            console.log(`[Proxy] Source: ${isStalker ? 'STALKER' : 'XTREAM'} | Type: ${streamType.toUpperCase()}`);
+            console.log(`[Proxy] Disguise (UA): ${headers['User-Agent'].substring(0, 45)}...`);
 
             // Forward Range header for video seeking support
             const rangeHeader = req.get('range');

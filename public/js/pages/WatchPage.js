@@ -462,7 +462,7 @@ class WatchPage {
 
     getProxiedUrl(url) {
         if (url.startsWith('/api/proxy/stream')) return url;
-        return `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+        return `/api/proxy/stream?url=${encodeURIComponent(url)}&streamType=vod`;
     }
 
     getRemuxUrl(url) {
@@ -618,10 +618,15 @@ class WatchPage {
         // Determine if proxy is needed
         const proxyRequiredDomains = ['pluto.tv'];
         const isStalkerUrl = url.startsWith('stalker://');
-        const needsProxy = settings.forceProxy || isStalkerUrl || proxyRequiredDomains.some(domain => url.includes(domain));
+        
+        // Detect Xtream stream URLs: they follow the pattern /live/user/pass/id.ext or /movie/user/pass/id.ext
+        const isXtreamStream = /\/(live|movie|series)\/[^/]+\/[^/]+\/\d+/.test(url);
+        
+        const needsProxy = settings.forceProxy || isStalkerUrl || isXtreamStream 
+            || proxyRequiredDomains.some(domain => url.includes(domain));
         const finalUrl = needsProxy ? this.getProxiedUrl(url) : url;
 
-        console.log('[WatchPage] Playing:', { url, needsProxy, looksLikeHls });
+        console.log('[WatchPage] Playing:', { url, needsProxy, isXtreamStream, looksLikeHls });
 
         // Use HLS.js for HLS streams
         if (looksLikeHls && Hls.isSupported()) {

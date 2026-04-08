@@ -52,32 +52,68 @@ class XtreamApi {
         return data;
     }
 
-    /**
-     * Get live channel categories
-     */
+    // ==========================================
+    // LIVE TV
+    // ==========================================
+
     async getLiveCategories() {
-        return this.request('get_live_categories');
+        const data = await this.request('get_live_categories');
+        if (!Array.isArray(data)) return [];
+
+        return data.map(cat => ({
+            ...cat,
+            category_id: cat.category_id != null ? `live_${cat.category_id}` : null
+        }));
     }
 
-    /**
-     * Get live streams, optionally filtered by category
-     */
     async getLiveStreams(categoryId = null) {
-        return this.request('get_live_streams', { category_id: categoryId });
+        // Strip prefix before sending to provider
+        const cleanId = categoryId ? categoryId.toString().replace('live_', '') : null;
+        const params = cleanId ? { category_id: cleanId } : {};
+
+        const data = await this.request('get_live_streams', params);
+        if (!Array.isArray(data)) return [];
+
+        return data.map(stream => {
+            // Live TV channels use tv_genre_id as their folder key.
+            // Fall back to category_id for providers that populate it instead.
+            let rawId = stream.category_id;
+            if (stream.tv_genre_id != null && stream.tv_genre_id !== '') {
+                rawId = stream.tv_genre_id;
+            }
+
+            return {
+                ...stream,
+                category_id: rawId != null ? `live_${rawId}` : null
+            };
+        });
     }
 
-    /**
-     * Get VOD categories
-     */
+    // ==========================================
+    // VOD (MOVIES)
+    // ==========================================
+
     async getVodCategories() {
-        return this.request('get_vod_categories');
+        const data = await this.request('get_vod_categories');
+        if (!Array.isArray(data)) return [];
+
+        return data.map(cat => ({
+            ...cat,
+            category_id: cat.category_id != null ? `vod_${cat.category_id}` : null
+        }));
     }
 
-    /**
-     * Get VOD streams, optionally filtered by category
-     */
     async getVodStreams(categoryId = null) {
-        return this.request('get_vod_streams', { category_id: categoryId });
+        const cleanId = categoryId ? categoryId.toString().replace('vod_', '') : null;
+        const params = cleanId ? { category_id: cleanId } : {};
+
+        const data = await this.request('get_vod_streams', params);
+        if (!Array.isArray(data)) return [];
+
+        return data.map(stream => ({
+            ...stream,
+            category_id: stream.category_id != null ? `vod_${stream.category_id}` : null
+        }));
     }
 
     /**
@@ -87,18 +123,31 @@ class XtreamApi {
         return this.request('get_vod_info', { vod_id: vodId });
     }
 
-    /**
-     * Get series categories
-     */
+    // ==========================================
+    // SERIES
+    // ==========================================
+
     async getSeriesCategories() {
-        return this.request('get_series_categories');
+        const data = await this.request('get_series_categories');
+        if (!Array.isArray(data)) return [];
+
+        return data.map(cat => ({
+            ...cat,
+            category_id: cat.category_id != null ? `series_${cat.category_id}` : null
+        }));
     }
 
-    /**
-     * Get series, optionally filtered by category
-     */
     async getSeries(categoryId = null) {
-        return this.request('get_series', { category_id: categoryId });
+        const cleanId = categoryId ? categoryId.toString().replace('series_', '') : null;
+        const params = cleanId ? { category_id: cleanId } : {};
+
+        const data = await this.request('get_series', params);
+        if (!Array.isArray(data)) return [];
+
+        return data.map(series => ({
+            ...series,
+            category_id: series.category_id != null ? `series_${series.category_id}` : null
+        }));
     }
 
     /**

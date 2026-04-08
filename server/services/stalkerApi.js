@@ -5,8 +5,8 @@
 
 const crypto = require('crypto');
 
-const STB_USER_AGENT = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3';
-const X_USER_AGENT = 'Model: MAG250; Link: WiFi';
+const STB_USER_AGENT = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
+const X_USER_AGENT = 'model=MAG250;version=2.18.02-r3';
 
 class StalkerApi {
     constructor(portalUrl, mac, options = {}) {
@@ -87,9 +87,9 @@ class StalkerApi {
             'X-User-Agent': X_USER_AGENT,
             'Referer': this.referrer,
             'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'close',
-            'Cookie': `mac=${encodedMac}; stb_lang=en; timezone=America/New_York`
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive',
+            'Cookie': `mac=${encodedMac}; stb_lang=en; timezone=America/Edmonton`
         };
 
         if (includeAuth && this.token) {
@@ -327,91 +327,209 @@ class StalkerApi {
     }
 
     // ============================================================
+    // Shared Parsers (safe against JS "0 is falsy" trap)
+    // ============================================================
+
+    /**
+     * Safely extract a channel's category/genre ID.
+     * Stalker uses "0" to mean "Uncategorized". We reject "0" so that
+     * the forced fallback ID from per-category fetching takes effect.
+     */
+    _extractCategoryId(item, forcedCategoryId = null) {
+        const candidates = [
+            item.tv_genre_id, 
+            item.genre_id, 
+            item.category_id, 
+            item.cat_id
+        ];
+        
+        for (const val of candidates) {
+            // Reject undefined, null, empty strings, AND the literal string "0"
+            if (val !== undefined && val !== null && val !== '' && String(val).trim() !== '0') {
+                return String(val).trim();
+            }
+        }
+        
+        // Force fallback to the category we are currently fetching
+        return forcedCategoryId !== null ? String(forcedCategoryId).trim() : "0";
+    }
+
+    /**
+     * Parse a raw genre/category array into normalized category objects.
+     * Matches .NET exact priority.
+     */
+    _parseCategories(data) {
+        if (!Array.isArray(data)) return [];
+        return data.map(item => ({
+            category_id: item.id || item.alias || item.genre_id || item.category_id || item.tv_genre_id,
+            category_name: item.title || item.name || item.genre_name || "Unknown"
+        })).filter(c => c.category_id !== undefined && c.category_id !== null);
+    }
+
+    /**
+     * Parse a raw channel array into normalized stream objects.
+     * @param {Array} data - Raw channel data from API
+     * @param {string|null} forcedCategoryId - Override category (used by per-genre slow path)
+     */
+    _parseChannels(data, forcedCategoryId = null) {
+        if (!Array.isArray(data)) return [];
+        return data.map(item => ({
+            stream_id: item.id || item.ch_id || item.stream_id,
+            name: item.name || item.title || "Unnamed Channel",
+            stream_icon: item.logo || item.icon || item.stream_icon || "",
+            // Use the safe extractor!
+            category_id: this._extractCategoryId(item, forcedCategoryId),
+            cmd: item.cmd,
+            use_http_tmp_link: item.use_http_tmp_link,
+            epg_channel_id: item.xmltv_id || null,
+            number: item.number,
+            tv_archive: item.enable_tv_archive === '1',
+            tv_archive_duration: parseInt(item.tv_archive_duration) || 0
+        })).filter(c => c.stream_id);
+    }
+
+    /**
+     * Safely extract the data array from Stalker's inconsistent JSON response shapes.
+     * Handles: raw array, { data: [...] }, { js: { data: [...] } }, { js: [...] }
+     */
+    _extractData(raw) {
+        if (!raw) return null;
+        if (Array.isArray(raw)) return raw;
+        if (raw.js && Array.isArray(raw.js.data)) return raw.js.data;
+        if (raw.js && Array.isArray(raw.js)) return raw.js;
+        if (Array.isArray(raw.data)) return raw.data;
+        return null;
+    }
+
+    // ============================================================
     // Live TV (IPTV)
     // ============================================================
 
     /**
-     * Get live TV categories (genres)
+     * Get live TV categories (genres).
+     * Clean multi-endpoint loop: tries get_genres then get_categories,
+     * each with and without token. With correct MAG250 headers,
+     * get_genres succeeds on the first try.
      */
     async getLiveCategories() {
-        const result = await this._request('itv', 'get_genres');
-        if (!Array.isArray(result)) return [];
+        console.log('[StalkerApi] Fetching Live TV Categories...');
+        const actions = ['get_genres', 'get_categories'];
 
-        return result.map(cat => ({
-            category_id: cat.id,
-            category_name: cat.title || cat.alias || `Category ${cat.id}`
-        }));
-    }
-
-    /**
-     * Get all live channels (paginated)
-     */
-    async getLiveStreams(genreId = null) {
-        const allChannels = [];
-        let page = 1;
-        let totalItems = Infinity;
-
-        while (allChannels.length < totalItems) {
-            const params = { p: page };
-            if (genreId && genreId !== '*') {
-                params.genre = genreId;
+        for (const action of actions) {
+            try {
+                // Try WITH token
+                const result = await this._request('itv', action);
+                const data = this._extractData(result) || (Array.isArray(result) ? result : []);
+                if (data && data.length > 0) {
+                    const cats = this._parseCategories(data);
+                    if (cats.length > 0) {
+                        console.log(`[StalkerApi] ${cats.length} categories from itv/${action} (with token)`);
+                        return cats;
+                    }
+                }
+            } catch (e) {
+                console.warn(`[StalkerApi] itv/${action} (with token) failed, trying without...`);
             }
 
-            const result = await this._request('itv', 'get_ordered_list', params);
-
-            if (result.total_items !== undefined) {
-                totalItems = parseInt(result.total_items) || 0;
+            try {
+                // Try WITHOUT token (some portals cache incorrectly with tokens)
+                const result = await this._request('itv', action, {}, false);
+                const data = this._extractData(result) || (Array.isArray(result) ? result : []);
+                if (data && data.length > 0) {
+                    const cats = this._parseCategories(data);
+                    if (cats.length > 0) {
+                        console.log(`[StalkerApi] ${cats.length} categories from itv/${action} (no token)`);
+                        return cats;
+                    }
+                }
+            } catch (e) {
+                console.warn(`[StalkerApi] Category endpoint itv/${action} failed, trying next...`);
             }
-
-            if (!result.data || result.data.length === 0) break;
-
-            for (const ch of result.data) {
-                allChannels.push({
-                    stream_id: ch.id,
-                    name: ch.name || `Channel ${ch.id}`,
-                    stream_icon: ch.logo ? this._resolveLogoUrl(ch.logo) : null,
-                    category_id: ch.tv_genre_id || ch.category_id || (genreId || 'uncategorized'),
-                    cmd: ch.cmd,
-                    use_http_tmp_link: ch.use_http_tmp_link,
-                    epg_channel_id: ch.xmltv_id || null,
-                    number: ch.number,
-                    tv_archive: ch.enable_tv_archive === '1',
-                    tv_archive_duration: parseInt(ch.tv_archive_duration) || 0
-                });
-            }
-
-            page++;
-
-            // Safety limit
-            if (page > 500) break;
         }
-
-        return allChannels;
+        return [];
     }
 
     /**
-     * Get all channels at once (some portals support this)
+     * Get all live channels (delegates to getLiveStreams).
      */
     async getAllChannels() {
         try {
-            const result = await this._request('itv', 'get_all_channels');
-            if (result.data && Array.isArray(result.data)) {
-                return result.data.map(ch => ({
-                    stream_id: ch.id,
-                    name: ch.name || `Channel ${ch.id}`,
-                    stream_icon: ch.logo ? this._resolveLogoUrl(ch.logo) : null,
-                    category_id: ch.tv_genre_id || 'uncategorized',
-                    cmd: ch.cmd,
-                    use_http_tmp_link: ch.use_http_tmp_link,
-                    epg_channel_id: ch.xmltv_id || null,
-                    number: ch.number
-                }));
-            }
-        } catch (err) {
-            // Fallback to paginated approach
-            console.warn('[StalkerApi] get_all_channels not supported, using pagination');
+            return await this.getLiveStreams();
+        } catch (error) {
+            console.error('[StalkerApi] getAllChannels failed:', error.message);
+            return [];
         }
-        return this.getLiveStreams();
+    }
+
+    /**
+     * Get all live streams with fast path + per-category slow path fallback.
+     *
+     * Fast path: get_all_channels (single request).
+     * If >40% of channels have missing/"0" genre IDs, switches to the
+     * per-category slow path: loops through categories via get_ordered_list,
+     * forcing the correct category_id onto each channel (matches .NET behavior).
+     */
+    async getLiveStreams() {
+        try {
+            console.log('[StalkerApi] Fetching Live TV Streams...');
+
+            // 1. Try the Fast Path (get_all_channels)
+            const result = await this._request('itv', 'get_all_channels');
+            const data = this._extractData(result) || (Array.isArray(result) ? result : null);
+
+            let useFastPath = false;
+
+            if (data && data.length > 0) {
+                // Count how many channels the portal ruined by sending missing or "0" genre IDs
+                let badGenreCount = 0;
+                for (const ch of data) {
+                    const genre = this._extractCategoryId(ch, null);
+                    if (genre === '0') badGenreCount++;
+                }
+
+                // If less than 40% of channels are broken, the fast path is safe to use
+                if (badGenreCount < (data.length * 0.4)) {
+                    useFastPath = true;
+                }
+            }
+
+            if (useFastPath) {
+                console.log(`[StalkerApi] Fast path successful. Parsed ${data.length} channels.`);
+                return this._parseChannels(data);
+            }
+
+            console.warn('[StalkerApi] Fast path returned stripped/zero genre IDs. Falling back to Per-Category Slow Path...');
+
+            // 2. The Per-Category Slow Path (Matches .NET behavior!)
+            // We use the clean categories we already downloaded using the exact MAG250 headers.
+            const categories = await this.getLiveCategories();
+            const allChannels = [];
+
+            for (const cat of categories) {
+                try {
+                    // Fetch channels specifically for this one folder
+                    const catResult = await this._request('itv', 'get_ordered_list', {
+                        genre: cat.category_id,
+                        p: 1
+                    });
+                    const pageData = this._extractData(catResult) || (catResult.data || null);
+
+                    if (pageData && pageData.length > 0) {
+                        // CRITICAL: Pass cat.category_id to force the channels into this folder!
+                        allChannels.push(...this._parseChannels(pageData, cat.category_id));
+                    }
+                } catch (e) {
+                    console.error(`[StalkerApi] Failed to fetch channels for category ${cat.category_id}`);
+                }
+            }
+
+            console.log(`[StalkerApi] Slow path completed. Parsed ${allChannels.length} channels perfectly categorized.`);
+            return allChannels;
+
+        } catch (error) {
+            console.error('[StalkerApi] Error fetching live streams:', error.message);
+            return [];
+        }
     }
 
     /**

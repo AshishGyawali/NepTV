@@ -83,16 +83,26 @@ router.post('/session', async (req, res) => {
             console.log(`[Transcode] Resolved to: ${url.substring(0, 50)}...`);
         }
 
-        const isStalker = url.includes('stalker') || url.includes('play/live.php');
+        // Explicit intent-based disguise (no URL guessing!)
+        const isStalkerSource = sourceType === 'stalker';
+        const isLiveStream = !!isLive;
 
         let customHeaders = '';
-        if (isStalker) {
-            customHeaders = 'X-User-Agent: Model: MAG250; Link: WiFi\r\n';
+        let sessionUserAgent;
+
+        if (isStalkerSource) {
+            // Rule A: Pure Stalker - Full MAG250 with X-User-Agent
+            sessionUserAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
+            customHeaders = 'X-User-Agent: model=MAG250;version=2.18.02-r3\r\n';
+        } else if (isLiveStream) {
+            // Rule B: Xtream Live TV - AppleCoreMedia master key
+            sessionUserAgent = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
+        } else {
+            // Rule C: Xtream VODs & Series - Media Player UA
+            sessionUserAgent = 'VLC/3.0.21 LibVLC/3.0.21';
         }
 
-        let sessionUserAgent = isStalker
-            ? 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3'
-            : 'VLC/3.0.16 LibVLC/3.0.16';
+        console.log(`[Transcode] Source: ${isStalkerSource ? 'STALKER' : 'XTREAM'} | Type: ${isLiveStream ? 'LIVE' : 'VOD'} | UA: ${sessionUserAgent.substring(0, 40)}...`);
 
         const session = await transcodeSession.createSession(url, {
             ffmpegPath,
@@ -103,17 +113,16 @@ router.post('/session', async (req, res) => {
             hwEncoder: settings.hwEncoder || 'software',
             maxResolution: settings.maxResolution || '1080p',
             quality: settings.quality || 'medium',
-            audioMixPreset: settings.audioMixPreset || 'auto', // Audio downmix preset
-            // Upscaling options
+            audioMixPreset: settings.audioMixPreset || 'auto',
             upscaleEnabled: settings.upscaleEnabled || false,
             upscaleMethod: settings.upscaleMethod || 'hardware',
             upscaleTarget: settings.upscaleTarget || '1080p',
-            videoMode: videoMode, // 'copy' or 'encode'
-            videoCodec: videoCodec, // 'h264', 'hevc', etc.
-            audioCodec: audioCodec, // 'aac', 'ac3', etc.
-            audioChannels: audioChannels, // number of channels (2=stereo)
+            videoMode: videoMode,
+            videoCodec: videoCodec,
+            audioCodec: audioCodec,
+            audioChannels: audioChannels,
             audioIdx: Number.isInteger(audioIdx) ? audioIdx : 0,
-            isLive: !!isLive
+            isLive: isLiveStream
         });
 
         await session.start();
@@ -233,12 +242,13 @@ router.get('/', async (req, res) => {
 
         const ffmpegPath = req.app.locals.ffmpegPath || 'ffmpeg';
 
-        const isStalker = url.includes('stalker') || url.includes('play/live.php');
+        const isStalkerSource = req.query.sourceType === 'stalker';
+        const isLiveQuery = req.query.isLive === '1';
 
         let customHeaders = '';
-        if (isStalker) {
-            customHeaders = 'X-User-Agent: Model: MAG250; Link: WiFi\r\n';
-        } else {
+        if (isStalkerSource) {
+            customHeaders = 'X-User-Agent: model=MAG250;version=2.18.02-r3\r\n';
+        } else if (!isLiveQuery) {
             try {
                 const parsedUrl = new URL(url);
                 customHeaders = `Referer: ${parsedUrl.protocol}//${parsedUrl.host}/\r\n`;
@@ -247,10 +257,16 @@ router.get('/', async (req, res) => {
             }
         }
 
-        // 2. Set the appropriate User-Agent
-        let userAgent = isStalker
-            ? 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3'
-            : 'VLC/3.0.16 LibVLC/3.0.16';
+        // 2. Set the appropriate User-Agent using the same explicit intent matrix
+        let userAgent;
+        if (isStalkerSource) {
+            userAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
+        } else if (isLiveQuery) {
+            // AppleCoreMedia master key for Xtream Live
+            userAgent = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
+        } else {
+            userAgent = 'VLC/3.0.21 LibVLC/3.0.21';
+        }
 
         // If it's a stalker URL, resolve it first
         if (url.startsWith('stalker://')) {

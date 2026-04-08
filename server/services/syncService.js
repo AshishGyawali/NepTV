@@ -346,7 +346,8 @@ class SyncService {
                     year = item.year;
                 }
 
-                const id = `${sourceId}:${itemId}`;
+                // Include type in composite ID to prevent cross-type collisions
+                const id = `${sourceId}:${type}:${itemId}`;
                 syncedIds.add(id);
 
                 stmt.run(
@@ -401,7 +402,9 @@ class SyncService {
             for (const cat of batch) {
                 const catId = cat.category_id; // standard xtream field
                 const name = cat.category_name;
-                const id = `${sourceId}:${catId}`;
+                // Include type in composite ID to prevent cross-type collisions
+                // (e.g. live category 113 "Sports" vs vod category 113 "Kannada Movies")
+                const id = `${sourceId}:${type}:${catId}`;
                 stmt.run(id, sourceId, String(catId), type, name, cat.parent_id || null, JSON.stringify(cat));
             }
         });
@@ -479,7 +482,9 @@ class SyncService {
                     added = item.last_modified;
                 }
 
-                const id = `${sourceId}:${itemId}`;
+                // Include type in composite ID to prevent cross-type collisions
+                // (e.g. live stream 100 vs vod stream 100)
+                const id = `${sourceId}:${type}:${itemId}`;
                 syncedIds.add(id);
 
                 stmt.run(
