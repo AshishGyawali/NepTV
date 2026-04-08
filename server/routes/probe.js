@@ -179,17 +179,21 @@ router.get('/', async (req, res) => {
     const isStalker = sourceType === 'stalker' || url.startsWith('stalker://');
     const isLive = req.query.isLive === '1' || req.query.isLive === 'true';
 
-    // Explicit intent-based UA (same matrix as proxy and transcode)
+    // === THE XTREAM FIREWALL BYPASS ===
+    if (!isStalker && isLive && url.includes('.m3u8')) {
+        url = url.replace('.m3u8', '.ts');
+        console.log('[Probe] Bypassing HLS Firewall: Rewrote .m3u8 to .ts');
+    }
+
+    // UA matrix
     let probeUserAgent;
     if (ua) {
         probeUserAgent = ua; // Explicit UA from frontend overrides everything
     } else if (isStalker) {
         probeUserAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
-    } else if (isLive) {
-        // AppleCoreMedia master key - bypasses both 405 and 401
-        probeUserAgent = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
     } else {
-        probeUserAgent = 'VLC/3.0.21 LibVLC/3.0.21';
+        // Universal IPTV Player Disguise for all Xtream traffic
+        probeUserAgent = 'IPTVSmartersPro';
     }
 
     try {
@@ -204,7 +208,7 @@ router.get('/', async (req, res) => {
             customHeaders = 'X-User-Agent: model=MAG250;version=2.18.02-r3\r\n';
         }
 
-        console.log(`[Probe] Probing: ${url.substring(0, 80)}... (UA: ${probeUserAgent.substring(0, 30)}...)`);
+        console.log(`[Probe] Probing: ${url.substring(0, 80)}... (UA: ${probeUserAgent})`);
 
         const probeResult = await probeStream(url, ffprobePath, probeUserAgent, customHeaders);
         const analysis = analyzeProbeResult(probeResult, url);

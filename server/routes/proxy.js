@@ -918,17 +918,23 @@ router.get('/stream', async (req, res) => {
             // 1. Capture explicit intent from the frontend request
             const streamType = req.query.streamType || 'unknown'; // 'live' or 'vod'
 
-            // 2. Base Headers
+            // === THE XTREAM FIREWALL BYPASS ===
+            // If it is Xtream Live TV, change the blocked .m3u8 extension to raw .ts
+            if (!isStalker && streamType === 'live' && url.includes('.m3u8')) {
+                url = url.replace('.m3u8', '.ts');
+                console.log('[Proxy] Bypassing HLS Firewall: Rewrote .m3u8 to .ts');
+            }
+
+            // 2. Strict Header Cleansing
             let headers = {
                 'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
                 'Connection': 'keep-alive'
             };
             let fetchOptions = {};
 
-            // 3. The Disguise Matrix (No URL guessing!)
+            // 3. The Disguise Matrix
             if (isStalker) {
-                // Rule A: Pure Stalker MUST use MAG250.
+                // Rule A: Pure Stalker - Full Hardware Disguise
                 headers['User-Agent'] = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
                 headers['X-User-Agent'] = 'model=MAG250;version=2.18.02-r3';
                 headers['Referer'] = new URL(url).origin + '/';
@@ -943,28 +949,13 @@ router.get('/stream', async (req, res) => {
                 if (url.startsWith('https')) {
                     fetchOptions.dispatcher = undefined;
                 }
-            } else if (streamType === 'live') {
-                // Rule B: Xtream Live TV - THE APPLECOREMEDIA MASTER KEY
-                // Bypasses 405 (Anti-Scraper) AND 401 (Stalker Auth Traps).
-                // Nginx firewalls whitelist this because blocking it breaks Apple TV/iOS.
-                headers['User-Agent'] = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
-            } else if (streamType === 'vod') {
-                // Rule C: Xtream VODs & Series MUST use a Media Player UA.
-                headers['User-Agent'] = 'VLC/3.0.21 LibVLC/3.0.21';
-                // Do NOT send Referer or Origin for VODs
             } else {
-                // Ultimate fallback if intent is missing (Pluto TV, M3U, etc.)
-                headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
-
-                // Pluto TV needs Origin/Referer
-                if (isPluto) {
-                    headers['Origin'] = 'https://pluto.tv';
-                    headers['Referer'] = 'https://pluto.tv/';
-                }
+                // Rule B & C: Universal IPTV Player Disguise for all Xtream traffic
+                headers['User-Agent'] = 'IPTVSmartersPro';
             }
 
             console.log(`[Proxy] Source: ${isStalker ? 'STALKER' : 'XTREAM'} | Type: ${streamType.toUpperCase()}`);
-            console.log(`[Proxy] Disguise (UA): ${headers['User-Agent'].substring(0, 45)}...`);
+            console.log(`[Proxy] Disguise (UA): ${headers['User-Agent']}`);
 
             // Forward Range header for video seeking support
             const rangeHeader = req.get('range');

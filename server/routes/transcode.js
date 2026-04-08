@@ -87,6 +87,12 @@ router.post('/session', async (req, res) => {
         const isStalkerSource = sourceType === 'stalker';
         const isLiveStream = !!isLive;
 
+        // === THE XTREAM FIREWALL BYPASS ===
+        if (!isStalkerSource && isLiveStream && url.includes('.m3u8')) {
+            url = url.replace('.m3u8', '.ts');
+            console.log('[Transcode] Bypassing HLS Firewall: Rewrote .m3u8 to .ts');
+        }
+
         let customHeaders = '';
         let sessionUserAgent;
 
@@ -94,15 +100,12 @@ router.post('/session', async (req, res) => {
             // Rule A: Pure Stalker - Full MAG250 with X-User-Agent
             sessionUserAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
             customHeaders = 'X-User-Agent: model=MAG250;version=2.18.02-r3\r\n';
-        } else if (isLiveStream) {
-            // Rule B: Xtream Live TV - AppleCoreMedia master key
-            sessionUserAgent = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
         } else {
-            // Rule C: Xtream VODs & Series - Media Player UA
-            sessionUserAgent = 'VLC/3.0.21 LibVLC/3.0.21';
+            // Rule B & C: Universal IPTV Player Disguise for all Xtream traffic
+            sessionUserAgent = 'IPTVSmartersPro';
         }
 
-        console.log(`[Transcode] Source: ${isStalkerSource ? 'STALKER' : 'XTREAM'} | Type: ${isLiveStream ? 'LIVE' : 'VOD'} | UA: ${sessionUserAgent.substring(0, 40)}...`);
+        console.log(`[Transcode] Source: ${isStalkerSource ? 'STALKER' : 'XTREAM'} | Type: ${isLiveStream ? 'LIVE' : 'VOD'} | UA: ${sessionUserAgent}`);
 
         const session = await transcodeSession.createSession(url, {
             ffmpegPath,
@@ -257,15 +260,12 @@ router.get('/', async (req, res) => {
             }
         }
 
-        // 2. Set the appropriate User-Agent using the same explicit intent matrix
+        // 2. Set the appropriate User-Agent
         let userAgent;
         if (isStalkerSource) {
             userAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb.aftergrad.confic Qt/4.7.4 Safari/533.3';
-        } else if (isLiveQuery) {
-            // AppleCoreMedia master key for Xtream Live
-            userAgent = 'AppleCoreMedia/1.0.0.19L362 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_US)';
         } else {
-            userAgent = 'VLC/3.0.21 LibVLC/3.0.21';
+            userAgent = 'IPTVSmartersPro';
         }
 
         // If it's a stalker URL, resolve it first

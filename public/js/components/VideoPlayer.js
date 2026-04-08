@@ -1285,7 +1285,11 @@ class VideoPlayer {
         const needsProxy = channel?.sourceType === 'stalker' ||
             proxyRequiredDomains.some(domain => url.includes(domain));
         const inputUrl = needsProxy ? this.getProxiedUrl(url, channel) : url;
-        return `/api/remux?url=${encodeURIComponent(inputUrl)}`;
+        let remuxUrl = `/api/remux?url=${encodeURIComponent(inputUrl)}&streamType=live`;
+        if (channel?.sourceType) {
+            remuxUrl += `&sourceType=${channel.sourceType}`;
+        }
+        return remuxUrl;
     }
     /**
      * Decode base64 EPG data
