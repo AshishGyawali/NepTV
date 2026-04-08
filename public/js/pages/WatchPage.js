@@ -98,6 +98,29 @@ class WatchPage {
         this.init();
     }
 
+    /**
+     * Show a sleek toast notification for playback fallbacks
+     */
+    showFallbackToast(message) {
+        const existing = document.getElementById('fallback-toast');
+        if (existing) existing.remove();
+
+        const toast = document.createElement('div');
+        toast.id = 'fallback-toast';
+        toast.className = 'toast-notification';
+        toast.innerHTML = `
+            <div class="toast-spinner"></div>
+            <span>${message}</span>
+        `;
+
+        document.body.appendChild(toast);
+        setTimeout(() => toast.classList.add('show'), 10);
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 400);
+        }, 5000);
+    }
+
     init() {
         // iOS Safari: detect and compensate for floating bottom toolbar
         const updateIosUiBottom = () => {
@@ -341,20 +364,34 @@ class WatchPage {
             });
             if (!res.ok) {
                 let details = 'Failed to start session';
+                const statusCode = res.status;
                 try {
                     const err = await res.json();
                     details = err.details || err.reason || err.error || details;
-                } catch (_) {
-                    // Ignore parse errors and fall back to generic message
+                } catch (_) {}
+
+                // === GRACEFUL FALLBACK LOGIC ===
+                // 251 = FFmpeg fatal exit, 500/502 = server/proxy error
+                if (statusCode >= 500 || details.includes('251')) {
+                    console.warn('[WatchPage] Transcode engine failure. Forcing native fallback.');
+                    this.showFallbackToast("Transcode engine busy. Attempting native fallback...");
+                    return `/api/proxy/stream?url=${encodeURIComponent(url)}`;
                 }
+                
                 throw new Error(details);
             }
             const session = await res.json();
             this.currentSessionId = session.sessionId;
             return session.playlistUrl;
         } catch (err) {
-            console.error('[WatchPage] Session start failed:', err);
-            // Fallback to direct transcode if session fails
+            console.error('[WatchPage] Session start failed:', err.message);
+
+            if (err.message.includes('251') || err.message.includes('Failed to fetch') || err.message.includes('Transcoding failed')) {
+                this.showFallbackToast("Transcode failed. Trying raw stream recovery...");
+                return `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+            }
+
+            // Fallback to legacy direct transcode if session fails
             const params = new URLSearchParams({ url });
             if (options.audioIdx !== undefined) params.set('audioIdx', String(options.audioIdx));
             if (options.audioChannels !== undefined) params.set('audioChannels', String(options.audioChannels));
@@ -642,8 +679,21 @@ class WatchPage {
         this.hls.on(Hls.Events.ERROR, (event, data) => {
             if (data.fatal) {
                 console.error('[WatchPage] HLS fatal error:', data);
+
+                // Transcode session failure (code 8, segment errors, etc.)
+                // Fall back to native playback through proxy
+                if (url.startsWith('/api/transcode/') && this.currentUrl) {
+                    console.warn('[WatchPage] Transcode stream failed. Falling back to native proxy playback.');
+                    this.hls.destroy();
+                    this.hls = null;
+                    this.stopTranscodeSession();
+                    this.updateTranscodeStatus('direct', 'Direct Play (Fallback)');
+                    this.showFallbackToast('Transcode failed. Switching to direct playback...');
+                    this.playNativeSource(this.getProxiedUrl(this.currentUrl), 'transcode fallback');
+                    return;
+                }
+
                 // Try proxy on CORS error (only if not already proxied/transcoded)
-                // Note: Transcoded streams are local, so no CORS issues usually
                 if (!url.startsWith('/api/') && (data.type === Hls.ErrorTypes.NETWORK_ERROR)) {
                     console.log('[WatchPage] Retrying via proxy...');
                     this.playHls(this.getProxiedUrl(this.currentUrl));

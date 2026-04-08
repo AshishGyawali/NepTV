@@ -309,7 +309,7 @@ class MoviesPage {
 
             card.innerHTML = `
                 <div class="movie-poster">
-                    <img src="${poster}" alt="${movie.name}" 
+                    <img src="${poster}" alt="${movie.name}"
                          onerror="this.onerror=null;this.src='/img/placeholder.png'" loading="lazy">
                     <div class="movie-play-overlay">
                         <span class="play-icon">${Icons.play}</span>
@@ -317,6 +317,7 @@ class MoviesPage {
                     <button class="favorite-btn ${isFav ? 'active' : ''}" title="${isFav ? 'Remove from Favorites' : 'Add to Favorites'}">
                         <span class="fav-icon">${isFav ? Icons.favorite : Icons.favoriteOutline}</span>
                     </button>
+                    <button class="info-btn" title="More Info">${Icons.arrowDownCircle}</button>
                 </div>
                 <div class="movie-info">
                     <div class="movie-title">${movie.name}</div>
@@ -327,12 +328,15 @@ class MoviesPage {
                 </div>
             `;
 
-            // Card click plays movie, but not if clicking favorite button
+            // Card click plays movie, but not if clicking favorite or info button
             card.addEventListener('click', (e) => {
                 if (e.target.closest('.favorite-btn')) {
                     const btn = e.target.closest('.favorite-btn');
                     this.toggleFavorite(movie, btn);
                     e.stopPropagation();
+                } else if (e.target.closest('.info-btn')) {
+                    e.stopPropagation();
+                    this.showInfoPopup(movie);
                 } else {
                     this.playMovie(movie);
                 }
@@ -391,6 +395,34 @@ class MoviesPage {
             console.error('Error playing movie:', err);
         }
     }
+    showInfoPopup(movie) {
+        const favKey = `${movie.sourceId}:${movie.stream_id}`;
+        const isFav = this.favoriteIds.has(favKey);
+
+        InfoPopup.showMovie(movie, {
+            isFavorite: isFav,
+            onPlay: () => this.playMovie(movie),
+            onFavorite: (item, nowFav) => {
+                const key = `${item.sourceId}:${item.stream_id}`;
+                if (nowFav) {
+                    this.favoriteIds.add(key);
+                    API.favorites.add(item.sourceId, item.stream_id, 'movie').catch(() => this.favoriteIds.delete(key));
+                } else {
+                    this.favoriteIds.delete(key);
+                    API.favorites.remove(item.sourceId, item.stream_id, 'movie').catch(() => this.favoriteIds.add(key));
+                }
+                // Update card button if visible
+                const card = this.container.querySelector(`.movie-card[data-movie-id="${item.stream_id}"][data-source-id="${item.sourceId}"]`);
+                if (card) {
+                    const btn = card.querySelector('.favorite-btn');
+                    const iconSpan = btn?.querySelector('.fav-icon');
+                    if (btn) { btn.classList.toggle('active', nowFav); btn.title = nowFav ? 'Remove from Favorites' : 'Add to Favorites'; }
+                    if (iconSpan) iconSpan.innerHTML = nowFav ? Icons.favorite : Icons.favoriteOutline;
+                }
+            }
+        });
+    }
+
     async toggleFavorite(movie, btn) {
         const favKey = `${movie.sourceId}:${movie.stream_id}`;
         const isFav = this.favoriteIds.has(favKey);

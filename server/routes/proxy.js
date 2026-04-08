@@ -317,12 +317,55 @@ router.get('/xtream/:sourceId/series_info', async (req, res) => {
         } else {
             const api = xtreamApi.createFromSource(source);
             data = await api.getSeriesInfo(seriesId);
+
+            // Normalize Xtream response: ensure episodes is an object with season keys
+            if (data && data.episodes) {
+                if (Array.isArray(data.episodes)) {
+                    data.episodes = { "1": data.episodes };
+                }
+            }
+
+            // Fallback: if Xtream returned no episodes (common for season-split entries
+            // like "Show Name S04" which is listed as its own series_id), look up the
+            // item in the DB and offer it as a single playable entry.
+            const hasEpisodes = data && data.episodes &&
+                typeof data.episodes === 'object' &&
+                Object.keys(data.episodes).length > 0 &&
+                Object.values(data.episodes).some(arr => Array.isArray(arr) && arr.length > 0);
+
+            if (!hasEpisodes) {
+                const db = getDb();
+                const item = db.prepare(
+                    'SELECT * FROM playlist_items WHERE source_id = ? AND item_id = ? AND type = ?'
+                ).get(source.id, seriesId, 'series');
+
+                if (item) {
+                    data = data || {};
+                    data.episodes = {
+                        '1': [{
+                            id: item.item_id,
+                            episode_num: 1,
+                            title: item.name || 'Play',
+                            container_extension: item.container_extension || 'mp4',
+                            duration: ''
+                        }]
+                    };
+                }
+            }
+        }
+
+        if (data && data.episodes) {
+            data.seasons = data.seasons || Object.keys(data.episodes).map(s => ({
+                season_number: parseInt(s),
+                name: `Season ${s}`
+            }));
         }
 
         cache.set(cacheType, source.id, cacheKey, data);
         res.json(data);
     } catch (err) {
-        res.status(502).json({ error: 'Upstream error', details: err.message });
+        console.error(`[Proxy] series_info error:`, err.message);
+        res.json({ episodes: {}, seasons: [] });
     }
 });
 
@@ -643,6 +686,46 @@ router.get('/xtream/:sourceId/:action', async (req, res) => {
                 break;
             case 'series_info':
                 data = await api.getSeriesInfo(series_id);
+
+                // Normalize Xtream response: ensure episodes is an object with season keys
+                if (data && data.episodes) {
+                    if (Array.isArray(data.episodes)) {
+                        data.episodes = { "1": data.episodes };
+                    }
+                }
+
+                // Fallback for empty episodes (season-split entries)
+                const hasEpisodes = data && data.episodes &&
+                    typeof data.episodes === 'object' &&
+                    Object.keys(data.episodes).length > 0 &&
+                    Object.values(data.episodes).some(arr => Array.isArray(arr) && arr.length > 0);
+
+                if (!hasEpisodes) {
+                    const db = getDb();
+                    const item = db.prepare(
+                        'SELECT * FROM playlist_items WHERE source_id = ? AND item_id = ? AND type = ?'
+                    ).get(source.id, series_id, 'series');
+
+                    if (item) {
+                        data = data || {};
+                        data.episodes = {
+                            '1': [{
+                                id: item.item_id,
+                                episode_num: 1,
+                                title: item.name || 'Play',
+                                container_extension: item.container_extension || 'mp4',
+                                duration: ''
+                            }]
+                        };
+                    }
+                }
+
+                if (data && data.episodes) {
+                    data.seasons = data.seasons || Object.keys(data.episodes).map(s => ({
+                        season_number: parseInt(s),
+                        name: `Season ${s}`
+                    }));
+                }
                 break;
             case 'short_epg':
                 data = await api.getShortEpg(stream_id, limit);
@@ -659,6 +742,10 @@ router.get('/xtream/:sourceId/:action', async (req, res) => {
         res.json(data);
     } catch (err) {
         console.error('Xtream proxy error:', err);
+        const actionParam = req.params.action; // Safe way to check since action could be undefined here if not defined at top
+        if (actionParam === 'series_info') {
+            return res.json({ episodes: {}, seasons: [] });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -690,8 +777,8 @@ router.get('/xtream/:sourceId/stream/:streamId/:type?', async (req, res) => {
  * Fetch and parse EPG (with file-based caching)
  * GET /api/proxy/epg/:sourceId
  * Query params:
- *   - refresh=1  Force refresh, bypass cache
- *   - maxAge=N   Max cache age in hours (default 24)
+ * - refresh=1  Force refresh, bypass cache
+ * - maxAge=N   Max cache age in hours (default 24)
  */
 router.get('/epg/:sourceId', async (req, res) => {
     try {

@@ -9,16 +9,14 @@ const { resolveStalkerUrl } = require('../services/stalkerResolver');
 
 /**
  * Transcode Routes
- * 
- * Direct streaming (backward compatible):
- *   GET /api/transcode?url=...
- * 
- * HLS session-based (new, supports seeking):
- *   POST /api/transcode/session        - Create new session
- *   GET  /api/transcode/:id/stream.m3u8 - Get HLS playlist
- *   GET  /api/transcode/:id/:segment.ts - Get segment file
- *   DELETE /api/transcode/:id          - Stop and cleanup session
- *   GET /api/transcode/sessions        - List all sessions (debug)
+ * * Direct streaming (backward compatible):
+ * GET /api/transcode?url=...
+ * * HLS session-based (new, supports seeking):
+ * POST /api/transcode/session        - Create new session
+ * GET  /api/transcode/:id/stream.m3u8 - Get HLS playlist
+ * GET  /api/transcode/:id/:segment.ts - Get segment file
+ * DELETE /api/transcode/:id          - Stop and cleanup session
+ * GET /api/transcode/sessions        - List all sessions (debug)
  */
 
 // Start session cleanup interval
@@ -31,7 +29,7 @@ transcodeSession.startCleanupInterval();
  */
 router.post('/session', async (req, res) => {
     try {
-        let { url, seekOffset, videoMode, videoCodec, audioCodec, audioChannels, audioIdx, sourceType, sourceId } = req.body || {};
+        let { url, seekOffset, videoMode, videoCodec, audioCodec, audioChannels, audioIdx, sourceType, sourceId, isLive } = req.body || {};
 
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
@@ -86,20 +84,13 @@ router.post('/session', async (req, res) => {
         }
 
         const isStalker = url.includes('stalker') || url.includes('play/live.php');
-        
+
         let customHeaders = '';
         if (isStalker) {
             customHeaders = 'X-User-Agent: Model: MAG250; Link: WiFi\r\n';
-        } else {
-            try {
-                const parsedUrl = new URL(url);
-                customHeaders = `Referer: ${parsedUrl.protocol}//${parsedUrl.host}/\r\n`;
-            } catch (e) {
-                console.error("[Transcode] Failed to parse URL for referer header");
-            }
         }
 
-        let sessionUserAgent = isStalker 
+        let sessionUserAgent = isStalker
             ? 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3'
             : 'VLC/3.0.16 LibVLC/3.0.16';
 
@@ -121,7 +112,8 @@ router.post('/session', async (req, res) => {
             videoCodec: videoCodec, // 'h264', 'hevc', etc.
             audioCodec: audioCodec, // 'aac', 'ac3', etc.
             audioChannels: audioChannels, // number of channels (2=stereo)
-            audioIdx: Number.isInteger(audioIdx) ? audioIdx : 0
+            audioIdx: Number.isInteger(audioIdx) ? audioIdx : 0,
+            isLive: !!isLive
         });
 
         await session.start();
@@ -223,13 +215,12 @@ router.get('/sessions', (req, res) => {
 /**
  * Direct transcode stream (backward compatible, no seeking)
  * GET /api/transcode?url=...
- * 
- * Transcodes audio to AAC for browser compatibility while passing video through.
+ * * Transcodes audio to AAC for browser compatibility while passing video through.
  * This fixes playback issues with Dolby/AC3/EAC3 audio that browsers can't decode.
  */
 router.get('/', async (req, res) => {
     try {
-        let { url, audioIdx, audioChannels } = req.query;
+        let { url, audioIdx, audioChannels, isLive } = req.query;
         if (!url) {
             return res.status(400).json({ error: 'URL parameter is required' });
         }
@@ -243,7 +234,7 @@ router.get('/', async (req, res) => {
         const ffmpegPath = req.app.locals.ffmpegPath || 'ffmpeg';
 
         const isStalker = url.includes('stalker') || url.includes('play/live.php');
-        
+
         let customHeaders = '';
         if (isStalker) {
             customHeaders = 'X-User-Agent: Model: MAG250; Link: WiFi\r\n';
@@ -257,7 +248,7 @@ router.get('/', async (req, res) => {
         }
 
         // 2. Set the appropriate User-Agent
-        let userAgent = isStalker 
+        let userAgent = isStalker
             ? 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3'
             : 'VLC/3.0.16 LibVLC/3.0.16';
 
@@ -280,7 +271,7 @@ router.get('/', async (req, res) => {
             '-user_agent', userAgent,
             ...(customHeaders ? ['-headers', customHeaders] : []),
             // Faster startup - reduced probe/analyze for quicker first bytes
-            '-probesize', '5000000', 
+            '-probesize', '5000000',
             '-analyzeduration', '5000000',
             // Error resilience: generate timestamps, discard corrupt packets
             '-fflags', '+genpts+discardcorrupt+nobuffer',
@@ -295,9 +286,11 @@ router.get('/', async (req, res) => {
             // Prevent Range/HEAD requests that some providers reject with 405
             '-seekable', '0',
             '-i', url,
-            // Map only requested video/audio streams and explicitly drop subtitles/data.
-            '-map', '0:v:0?',
-            '-map', `0:a:${normalizedAudioIdx}?`, // ? makes audio optional if not present
+            // Map video/audio streams. Live TV uses auto-select to handle ad stitching
+            // and track layout changes. VOD uses strict mapping.
+            ...(isLive === '1'
+                ? ['-map', '0:v?', '-map', '0:a?']
+                : ['-map', '0:v:0?', '-map', `0:a:${normalizedAudioIdx}?`]),
             '-sn',
             '-dn',
             // Video: passthrough (no re-encoding = fast!)

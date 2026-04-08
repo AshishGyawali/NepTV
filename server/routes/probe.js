@@ -192,13 +192,6 @@ router.get('/', async (req, res) => {
         let customHeaders = '';
         if (isStalker) {
             customHeaders = 'X-User-Agent: Model: MAG250; Link: WiFi\r\n';
-        } else {
-            try {
-                const parsedUrl = new URL(url);
-                customHeaders = `Referer: ${parsedUrl.protocol}//${parsedUrl.host}/\r\n`;
-            } catch (e) {
-                console.error("[Probe] Failed to parse URL for referer header", e.message);
-            }
         }
 
         console.log(`[Probe] Probing: ${url.substring(0, 80)}... ${probeUserAgent ? `(UA: ${probeUserAgent.substring(0, 30)}...)` : ''}`);

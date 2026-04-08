@@ -3,6 +3,17 @@
  * Handles TV series browsing and playback
  */
 
+// Utility function to clean up Xtream series names
+function cleanSeriesName(name) {
+    if (!name) return "";
+    return name
+        .replace(/\s*\(\d{4}\)/g, '')       // Removes (2024), (2023)
+        .replace(/\s*\(US\)/i, '')          // Removes (US)
+        .replace(/\s*S\d+/i, '')            // Removes S01, S2
+        .replace(/^EN\s*-\s*/i, '')         // Removes "EN - " prefixes (like in your 56 Days screenshot)
+        .trim();
+}
+
 class SeriesPage {
     constructor(app) {
         this.app = app;
@@ -257,10 +268,32 @@ class SeriesPage {
 
         console.log(`[Series] Displaying ${this.filteredSeries.length} of ${this.seriesList.length} series`);
 
+        const grouped = {};
+        this.filteredSeries.forEach(series => {
+            const cleanName = cleanSeriesName(series.name).toLowerCase();
+            const key = `${series.sourceId}_${cleanName}`;
+            if (!grouped[key]) {
+                grouped[key] = {
+                    ...series,
+                    displayName: cleanSeriesName(series.name),
+                    seasonsList: [series]
+                };
+            } else {
+                if (!grouped[key].seasonsList.some(s => s.series_id === series.series_id)) {
+                    grouped[key].seasonsList.push(series);
+                }
+            }
+        });
+        
+        this.groupedSeries = Object.values(grouped).map(group => {
+            group.seasonsList.sort((a,b) => a.name.localeCompare(b.name));
+            return group;
+        });
+
         this.currentBatch = 0;
         this.container.innerHTML = '';
 
-        if (this.filteredSeries.length === 0) {
+        if (this.groupedSeries.length === 0) {
             this.container.innerHTML = '<div class="empty-state"><p>No series found</p></div>';
             return;
         }
@@ -283,7 +316,7 @@ class SeriesPage {
     renderNextBatch() {
         const start = this.currentBatch * this.batchSize;
         const end = start + this.batchSize;
-        const batch = this.filteredSeries.slice(start, end);
+        const batch = this.groupedSeries.slice(start, end);
 
         if (batch.length === 0) {
             const loader = this.container.querySelector('.series-loader');
@@ -307,7 +340,7 @@ class SeriesPage {
 
             card.innerHTML = `
                 <div class="series-poster">
-                    <img src="${poster}" alt="${series.name}" 
+                    <img src="${poster}" alt="${series.name}"
                          onerror="this.onerror=null;this.src='/img/placeholder.png'" loading="lazy">
                     <div class="series-play-overlay">
                         <span class="play-icon">${Icons.play}</span>
@@ -315,9 +348,10 @@ class SeriesPage {
                     <button class="favorite-btn ${isFav ? 'active' : ''}" title="${isFav ? 'Remove from Favorites' : 'Add to Favorites'}">
                         <span class="fav-icon">${isFav ? Icons.favorite : Icons.favoriteOutline}</span>
                     </button>
+                    <button class="info-btn" title="More Info">${Icons.arrowDownCircle}</button>
                 </div>
                 <div class="series-card-info">
-                    <div class="series-title">${series.name}</div>
+                    <div class="series-title">${series.displayName || cleanSeriesName(series.name)}</div>
                     <div class="series-meta">
                         ${year ? `<span>${year}</span>` : ''}
                         ${rating ? `<span>${rating}</span>` : ''}
@@ -330,8 +364,11 @@ class SeriesPage {
                     const btn = e.target.closest('.favorite-btn');
                     this.toggleFavorite(series, btn);
                     e.stopPropagation();
+                } else if (e.target.closest('.info-btn')) {
+                    e.stopPropagation();
+                    this.showInfoPopup(series);
                 } else {
-                    this.showSeriesDetails(series);
+                    this.showInfoPopup(series);
                 }
             });
             fragment.appendChild(card);
@@ -348,7 +385,7 @@ class SeriesPage {
         this.currentBatch++;
 
         // Hide loader if done
-        if (end >= this.filteredSeries.length && loader) {
+        if (end >= this.groupedSeries.length && loader) {
             loader.style.display = 'none';
         }
     }
@@ -362,65 +399,134 @@ class SeriesPage {
 
         // Set header info
         document.getElementById('series-poster').src = series.cover || '/img/placeholder.png';
-        document.getElementById('series-title').textContent = series.name;
+        document.getElementById('series-title').textContent = series.displayName || cleanSeriesName(series.name);
         document.getElementById('series-plot').textContent = series.plot || '';
 
-        // Show loading
-        this.seasonsContainer.innerHTML = '<div class="loading"><div class="loading-spinner"></div></div>';
+        // Build header with Part Selector if split-seasons
+        this.seasonsContainer.innerHTML = '<div id="series-episodes-viewport"><div class="loading"><div class="loading-spinner"></div><div style="text-align:center; margin-top:10px; color:#aaa;">Locating episodes...</div></div></div>';
+        
+        let headerHtml = '';
+        let workingSeriesId = series.series_id;
+        let initialEpisodes = null;
+        let probedCache = {};
+        
+        const fetchEpisodesData = async (seriesId) => {
+            try {
+                const info = await API.proxy.xtream.seriesInfo(series.sourceId, seriesId);
+                if (!info || !info.episodes || Object.keys(info.episodes).length === 0) {
+                    probedCache[seriesId] = null;
+                    return null;
+                }
+                probedCache[seriesId] = info;
+                return info;
+            } catch (err) {
+                probedCache[seriesId] = null;
+                return null;
+            }
+        };
 
-        try {
-            // Fetch series info (seasons/episodes)
-            const info = await API.proxy.xtream.seriesInfo(series.sourceId, series.series_id);
+        if (series.seasonsList && series.seasonsList.length > 1) {
+            // Sequential Probe
+            for (const season of series.seasonsList) {
+                const info = await fetchEpisodesData(season.series_id);
+                if (info) {
+                    workingSeriesId = season.series_id;
+                    initialEpisodes = info;
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 100)); // micro-delay
+            }
 
-            if (!info || !info.episodes) {
-                this.seasonsContainer.innerHTML = '<p class="hint">No episodes found</p>';
+            headerHtml = `
+            <div class="season-selector-wrapper" style="margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+                <span style="color: #aaa;">Season</span>
+                <select id="series-part-select" class="dropdown-select" style="padding: 5px; border-radius: 4px; background: #2a2a2a; color: #fff; border: 1px solid #444;">
+                    ${series.seasonsList.map(s => {
+                        const label = window.extractSeasonLabel(s.name, series.displayName);
+                        const isEmptyStr = (probedCache[s.series_id] === null) ? ' (Empty)' : '';
+                        const isSelected = s.series_id === workingSeriesId ? 'selected' : '';
+                        return `<option value="${s.series_id}" ${isSelected}>${label}${isEmptyStr}</option>`;
+                    }).join('')}
+                </select>
+            </div>
+            `;
+        } else {
+            // Normal fallback
+            initialEpisodes = await fetchEpisodesData(series.series_id);
+        }
+
+        this.seasonsContainer.innerHTML = headerHtml + '<div id="series-episodes-viewport"></div>';
+        const viewport = this.seasonsContainer.querySelector('#series-episodes-viewport');
+        const selectEl = this.seasonsContainer.querySelector('#series-part-select');
+
+        const renderGroup = (seasonName, episodes, seriesId) => {
+            return `
+            <div class="season-group">
+                <div class="season-header">
+                    <span class="season-expander">${Icons.chevronDown}</span>
+                    <span class="season-name">${seasonName} (${episodes.length} episodes)</span>
+                </div>
+                <div class="episode-list">
+                    ${episodes.map(ep => `
+                        <div class="episode-item" data-episode-id="${ep.id}" data-spec-series-id="${seriesId}" data-source-id="${series.sourceId}" data-container="${ep.container_extension || 'mp4'}">
+                            <span class="episode-number">E${ep.episode_num || ep.episode_number || ''}</span>
+                            <span class="episode-title">${ep.title || `Episode ${ep.episode_num || ep.episode_number || ''}`}</span>
+                            <span class="episode-duration">${ep.duration || ''}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>`;
+        };
+
+        const loadPart = async (seriesId) => {
+            viewport.innerHTML = '<div class="loading"><div class="loading-spinner"></div></div>';
+            
+            let info = probedCache[seriesId];
+            if (info === undefined) {
+                info = await fetchEpisodesData(seriesId);
+            }
+
+            if (!info) {
+                viewport.innerHTML = '<div style="padding: 20px; text-align: center;"><p class="hint" style="color: #aaa;">No episodes available.</p><p style="color: #666; font-size: 0.9em; margin-top: 5px;">The provider has listed this season, but no media files are attached.</p></div>';
                 return;
             }
 
-            // Store series info for WatchPage
             this.currentSeriesInfo = info;
-
-            // Render seasons and episodes
             let html = '';
-            const seasons = Object.keys(info.episodes).sort((a, b) => parseInt(a) - parseInt(b));
 
-            seasons.forEach(seasonNum => {
-                const episodes = info.episodes[seasonNum];
-                html += `
-                <div class="season-group">
-                    <div class="season-header">
-                        <span class="season-expander">${Icons.chevronDown}</span>
-                        <span class="season-name">Season ${seasonNum} (${episodes.length} episodes)</span>
-                    </div>
-                    <div class="episode-list">
-                        ${episodes.map(ep => `
-                            <div class="episode-item" data-episode-id="${ep.id}" data-source-id="${series.sourceId}" data-container="${ep.container_extension || 'mp4'}">
-                                <span class="episode-number">E${ep.episode_num}</span>
-                                <span class="episode-title">${ep.title || `Episode ${ep.episode_num}`}</span>
-                                <span class="episode-duration">${ep.duration || ''}</span>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>`;
-            });
+            if (series.seasonsList && series.seasonsList.length > 1) {
+                const flatEps = Object.values(info.episodes).flat();
+                let displayLabel = "Episodes";
+                if (selectEl) {
+                    const opt = selectEl.options[selectEl.selectedIndex];
+                    displayLabel = opt ? opt.text.replace(' (Empty)', '') : "Episodes";
+                }
+                html += renderGroup(displayLabel, flatEps, seriesId);
+            } else {
+                const seasons = Object.keys(info.episodes).sort((a, b) => parseInt(a) - parseInt(b));
+                seasons.forEach(sNum => {
+                    html += renderGroup(`Season ${sNum}`, info.episodes[sNum], seriesId);
+                });
+            }
+            
+            viewport.innerHTML = html;
 
-            this.seasonsContainer.innerHTML = html;
-
-            // Add click handlers
-            this.seasonsContainer.querySelectorAll('.season-header').forEach(header => {
+            viewport.querySelectorAll('.season-header').forEach(header => {
                 header.addEventListener('click', () => {
                     header.closest('.season-group').classList.toggle('collapsed');
                 });
             });
 
-            this.seasonsContainer.querySelectorAll('.episode-item').forEach(ep => {
+            viewport.querySelectorAll('.episode-item').forEach(ep => {
                 ep.addEventListener('click', () => this.playEpisode(ep));
             });
+        };
 
-        } catch (err) {
-            console.error('Error loading series info:', err);
-            this.seasonsContainer.innerHTML = '<p class="hint" style="color: var(--color-error);">Error loading episodes</p>';
+        if (selectEl) {
+            selectEl.addEventListener('change', (e) => loadPart(e.target.value));
         }
+        
+        loadPart(workingSeriesId);
     }
 
     hideDetails() {
@@ -457,14 +563,14 @@ class SeriesPage {
                     this.app.pages.watch.play({
                         type: 'series',
                         id: episodeId,
-                        title: this.currentSeries?.name || 'Series',
+                        title: this.currentSeries?.displayName || cleanSeriesName(this.currentSeries?.name || 'Series'),
                         subtitle: `S${seasonNum} E${episodeNum} - ${episodeTitle}`,
                         poster: this.currentSeries?.cover,
                         description: this.currentSeries?.plot || '',
                         year: this.currentSeries?.year,
                         rating: this.currentSeries?.rating,
                         sourceId: sourceId,
-                        seriesId: this.currentSeries?.series_id,
+                        seriesId: episodeEl.dataset.specSeriesId || this.currentSeries?.series_id,
                         seriesInfo: this.currentSeriesInfo,
                         currentSeason: seasonNum,
                         currentEpisode: episodeNum,
@@ -474,6 +580,71 @@ class SeriesPage {
             }
         } catch (err) {
             console.error('Error playing episode:', err);
+        }
+    }
+
+    showInfoPopup(series) {
+        const favKey = `${series.sourceId}:${series.series_id}`;
+        const isFav = this.favoriteIds.has(favKey);
+
+        InfoPopup.showSeries(series, {
+            isFavorite: isFav,
+            sources: this.sources,
+            onPlayEpisode: (epId, srcId, container, seasonNum, epNum, seriesObj, seriesInfo) => {
+                this.playEpisodeFromPopup(epId, srcId, container, seasonNum, epNum, seriesObj, seriesInfo);
+            },
+            onFavorite: (item, nowFav) => {
+                const key = `${item.sourceId}:${item.series_id}`;
+                if (nowFav) {
+                    this.favoriteIds.add(key);
+                    API.favorites.add(item.sourceId, item.series_id, 'series').catch(() => this.favoriteIds.delete(key));
+                } else {
+                    this.favoriteIds.delete(key);
+                    API.favorites.remove(item.sourceId, item.series_id, 'series').catch(() => this.favoriteIds.add(key));
+                }
+                const card = this.container.querySelector(`.series-card[data-series-id="${item.series_id}"][data-source-id="${item.sourceId}"]`);
+                if (card) {
+                    const btn = card.querySelector('.favorite-btn');
+                    const iconSpan = btn?.querySelector('.fav-icon');
+                    if (btn) { btn.classList.toggle('active', nowFav); btn.title = nowFav ? 'Remove from Favorites' : 'Add to Favorites'; }
+                    if (iconSpan) iconSpan.innerHTML = nowFav ? Icons.favorite : Icons.favoriteOutline;
+                }
+            }
+        });
+    }
+
+    async playEpisodeFromPopup(episodeId, sourceId, container, seasonNum, episodeNum, seriesObj, seriesInfo) {
+        try {
+            const source = this.sources.find(s => s.id === sourceId);
+            const isStalker = source && source.type === 'stalker';
+            const result = isStalker
+                ? { url: `stalker://${sourceId}/${episodeId}/series` }
+                : await API.proxy.xtream.getStreamUrl(sourceId, episodeId, 'series', container);
+
+            if (result && result.url && this.app.pages.watch) {
+                const episodes = seriesInfo?.episodes?.[seasonNum] || [];
+                const ep = episodes.find(e => String(e.id) === String(episodeId));
+                const episodeTitle = ep?.title || `Episode ${episodeNum}`;
+
+                this.app.pages.watch.play({
+                    type: 'series',
+                    id: episodeId,
+                    title: seriesObj?.displayName || cleanSeriesName(seriesObj?.name || 'Series'),
+                    subtitle: `S${seasonNum} E${episodeNum} - ${episodeTitle}`,
+                    poster: seriesObj?.cover,
+                    description: seriesObj?.plot || '',
+                    year: seriesObj?.year,
+                    rating: seriesObj?.rating,
+                    sourceId: sourceId,
+                    seriesId: seriesObj?.series_id,
+                    seriesInfo: seriesInfo,
+                    currentSeason: seasonNum,
+                    currentEpisode: episodeNum,
+                    containerExtension: container
+                }, result.url);
+            }
+        } catch (err) {
+            console.error('Error playing episode from popup:', err);
         }
     }
 

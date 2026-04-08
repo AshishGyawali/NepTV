@@ -238,11 +238,17 @@ class TranscodeSession extends EventEmitter {
             args.push('-ss', String(this.options.seekOffset));
         }
 
-        // Map only primary video/audio streams and explicitly drop subtitle/data streams.
-        // This avoids MKV subtitle tracks (PGS/VobSub/etc.) breaking HLS session startup.
+        // Map video/audio streams. For live TV, use auto-select to handle ad stitching
+        // and track layout changes (e.g. Pluto TV). For VOD, use strict mapping to avoid
+        // MKV subtitle tracks (PGS/VobSub/etc.) breaking HLS session startup.
         const audioIdx = Number.isInteger(this.options.audioIdx) ? this.options.audioIdx : 0;
-        args.push('-map', '0:v:0?');
-        args.push('-map', `0:a:${audioIdx}?`);
+        if (this.options.isLive) {
+            args.push('-map', '0:v?');
+            args.push('-map', '0:a?');
+        } else {
+            args.push('-map', '0:v:0?');
+            args.push('-map', `0:a:${audioIdx}?`);
+        }
         args.push('-sn', '-dn');
 
         // Add video encoder and filters based on selected encoder OR copy
