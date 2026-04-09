@@ -46,7 +46,7 @@ nodecast-tv is a modern, web-based IPTV player featuring Live TV, EPG, Movies (V
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/technomancer702/nodecast-tv.git
+    git clone https://github.com/AshishGyawali/NepTV.git
     cd nodecast-tv
     ```
 
@@ -71,7 +71,7 @@ You can run nodecast-tv easily using Docker.
     ```yaml
     services:
       nodecast-tv:
-        build: https://github.com/technomancer702/nodecast-tv.git#main
+        build: https://github.com/AshishGyawali/NepTV.git#main
         container_name: nodecast-tv
         ports:
           - "3000:3000" # Host:Container
