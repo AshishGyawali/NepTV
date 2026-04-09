@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="public/img/logo-banner.png" alt="nodecast-tv" height="60" />
+  <img src="public/img/logo-banner.png" alt="NepTV" height="60" />
 </p>
 
-# What is nodecast-tv?
+# What is NepTV?
 
-nodecast-tv is a modern, web-based IPTV player featuring Live TV, EPG, Movies (VOD), and Series support. Built with performance and user experience in mind.
+NepTV is a modern, web-based IPTV player featuring Live TV, EPG, Movies (VOD), and Series support. Built with performance and user experience in mind.
 
 ## Features
 
@@ -12,7 +12,7 @@ nodecast-tv is a modern, web-based IPTV player featuring Live TV, EPG, Movies (V
 - **📅 TV Guide (EPG)**: Interactive grid guide with 24h timeline, search, and dynamic resizing.
 - **🎬 VOD Support**: Dedicated sections for Movies and TV Series with rich metadata, posters, and seasonal episode lists.
 - **❤️ Favorites System**: Unified favorites for channels, movies, and series with instant synchronization.
-- **🔐 Authentication**: User login system with admin and viewer roles ([details](https://github.com/technomancer702/nodecast-tv/pull/23)).
+- **🔐 Authentication**: User login system with admin and viewer roles ([details](https://github.com/technomancer702/NepTV/pull/23)).
 - **🆔 OIDC SSO**: Support for Single Sign-On via OIDC providers (Authentik, Keycloak, etc.).
 - **⚡ High Performance**: Optimized for large playlists (7000+ channels) using virtual scrolling and batch rendering.
 - **⚙️ Management**: 
@@ -47,7 +47,7 @@ nodecast-tv is a modern, web-based IPTV player featuring Live TV, EPG, Movies (V
 1.  Clone the repository:
     ```bash
     git clone https://github.com/AshishGyawali/NepTV.git
-    cd nodecast-tv
+    cd NepTV
     ```
 
 2.  Install dependencies:
@@ -64,15 +64,15 @@ nodecast-tv is a modern, web-based IPTV player featuring Live TV, EPG, Movies (V
 
 ### Docker Deployment
 
-You can run nodecast-tv easily using Docker.
+You can run NepTV easily using Docker.
 
 1.  Create a `docker-compose.yml` file (or copy the one from this repo):
 
     ```yaml
     services:
-      nodecast-tv:
+      NepTV:
         build: https://github.com/AshishGyawali/NepTV.git#main
-        container_name: nodecast-tv
+        container_name: NepTV
         ports:
           - "3000:3000" # Host:Container
         volumes:
@@ -143,7 +143,7 @@ OIDC_CALLBACK_URL=http://localhost:3000/api/auth/oidc/callback # Adjust for your
 
 ## Browser Codec Support & Transcoding
 
-nodecast-tv is a web-based application. By default, **video decoding is handled by your browser**. However, the built-in **smart transcoding system** automatically converts incompatible media (e.g., HEVC video, Dolby audio) into browser-friendly formats using FFmpeg.
+NepTV is a web-based application. By default, **video decoding is handled by your browser**. However, the built-in **smart transcoding system** automatically converts incompatible media (e.g., HEVC video, Dolby audio) into browser-friendly formats using FFmpeg.
 
 **Codec Compatibility Table:**
 
@@ -162,7 +162,7 @@ nodecast-tv is a web-based application. By default, **video decoding is handled 
 
 ## Supported Stream Types
 
-nodecast-tv is optimized for **HLS (HTTP Live Streaming)**.
+NepTV is optimized for **HLS (HTTP Live Streaming)**.
 
 -   **✅ HLS (`.m3u8`)**: Fully supported and recommended. Best for adaptive bitrate and network resilience.
 -   **✅ MPEG-TS (`.ts`)**: Supported via Force Remux in settings.
@@ -234,7 +234,7 @@ All transcoding and stream processing settings are found in **Settings → Trans
 
 ### HTTPS / Reverse Proxy Issues
 
-If you're running nodecast-tv behind a reverse proxy (Nginx, Caddy, Traefik) with HTTPS:
+If you're running NepTV behind a reverse proxy (Nginx, Caddy, Traefik) with HTTPS:
 
 | Symptom | Likely Cause | Solution |
 |---------|--------------|----------|
@@ -280,16 +280,16 @@ There is rarely a need to configure specific "Force Remux" settings manually any
 
 ### TVHeadend
 
-If you're using TVHeadend as your source, you may need to configure a few settings for streams to play correctly in nodecast-tv:
+If you're using TVHeadend as your source, you may need to configure a few settings for streams to play correctly in NepTV:
 
 **Option 1: Enable Force Backend Proxy (Easiest)**
-- In nodecast-tv, go to **Settings → Transcoding → Network**
+- In NepTV, go to **Settings → Transcoding → Network**
 - Enable **"Force Backend Proxy"**
 - This routes streams through the server, bypassing browser CORS restrictions
 
 **Option 2: Configure TVHeadend CORS**
 - In TVHeadend, go to **Configuration → General → Base → HTTP Server Settings**
-- Add your nodecast-tv URL to **"CORS origin"** (e.g., `http://192.168.1.100:3000`)
+- Add your NepTV URL to **"CORS origin"** (e.g., `http://192.168.1.100:3000`)
 - **Note:** You must include the protocol (`http://` or `https://`)
 
 **Additional Tips:**
@@ -314,7 +314,7 @@ If you are using `acestream-docker-home` or similar tools, it is **recommended**
 ## Project Structure
 
 ```
-nodecast-tv/
+NepTV/
 ├── public/              # Frontend assets
 │   ├── css/             # Stylesheets
 │   ├── js/              # Client-side logic
