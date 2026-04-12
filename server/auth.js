@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const passport = require('passport');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const { Strategy: LocalStrategy } = require('passport-local');
+const { resolveRequestDeviceMac } = require('./services/deviceIdentity');
 
 /**
  * Authentication and Authorization Module
@@ -226,9 +227,13 @@ function configureOidcStrategy(findUserByOidcId, findUserByEmail, createUser) {
 }
 
 /**
- * Middleware: Require authentication using Passport JWT
+ * Middleware: Require authentication
+ * In license mode → delegates to requireLicenseAuth (remote PHP verify)
+ * In local mode   → uses Passport JWT strategy
  */
-const requireAuth = passport.authenticate('jwt', { session: false });
+const requireAuth = process.env.LICENSE_SERVER_URL
+    ? requireLicenseAuth()
+    : passport.authenticate('jwt', { session: false });
 
 /**
  * Middleware: Require admin role
@@ -252,6 +257,63 @@ function requireRole(role) {
     };
 }
 
+// ============================================================
+// License Server Mode — remote auth via PHP server
+// ============================================================
+
+/**
+ * Middleware: Require authentication via the remote license server.
+ * Validates the Bearer token against the PHP server and optionally
+ * enforces device locking.
+ *
+ * On success, sets req.user = { id, username, role }.
+ *
+ * @param {object} options
+ * @param {boolean} options.checkDevice - Whether to enforce device lock (default: false)
+ */
+function requireLicenseAuth(options = {}) {
+    const { checkDevice = false } = options;
+
+    return async (req, res, next) => {
+        const authHeader = req.headers.authorization || '';
+        // Accept token from header OR query param (video/audio elements can't send headers)
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.query.token || null);
+
+        if (!token) {
+            return res.status(401).json({ error: 'No token provided' });
+        }
+
+        try {
+            const licenseService = require('./services/licenseService').getInstance();
+            // Resolve the request's MAC address on the local Node server.
+            const deviceId = checkDevice
+                ? await resolveRequestDeviceMac(req)
+                : null;
+            if (checkDevice && !deviceId) {
+                return res.status(403).json({ error: 'Unable to verify this device MAC address' });
+            }
+            const user = await licenseService.verify(token, deviceId);
+
+            req.user = user;
+            req.licenseToken = token;
+            next();
+        } catch (err) {
+            const status = err.status || 401;
+            return res.status(status).json({ error: err.message });
+        }
+    };
+}
+
+/**
+ * Middleware: Require license auth + admin role.
+ */
+function requireLicenseAdmin(req, res, next) {
+    if (!req.user || req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Forbidden - Admin access required' });
+    }
+    next();
+}
+
 module.exports = {
     passport,
     hashPassword,
@@ -264,5 +326,8 @@ module.exports = {
     configureOidcStrategy,
     requireAuth,
     requireAdmin,
-    requireRole
+    requireRole,
+    // License server mode
+    requireLicenseAuth,
+    requireLicenseAdmin,
 };

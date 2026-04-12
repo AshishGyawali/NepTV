@@ -2,6 +2,12 @@ const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
 const db = require('../db');
+const { requireLicenseAuth } = require('../auth');
+
+// License server mode: enforce auth + IP lock on remux routes
+if (process.env.LICENSE_SERVER_URL) {
+    router.use(requireLicenseAuth({ checkDevice: true }));
+}
 
 /**
  * Remux stream (container conversion only)

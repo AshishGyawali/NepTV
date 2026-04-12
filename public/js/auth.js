@@ -1,16 +1,26 @@
 /**
  * Auth Manager - Frontend authentication state management
+ * Supports both local DB mode and license server mode
  */
 
 const Auth = {
     currentUser: null,
+    authMode: 'local', // 'local' or 'license'
 
     /**
      * Initialize auth - check setup status and current user
      */
     async init() {
         try {
-            // Check if setup is required
+            // Detect auth mode
+            try {
+                const modeInfo = await API.auth.mode();
+                this.authMode = modeInfo.mode || 'local';
+            } catch (e) {
+                // Fallback to local if mode endpoint unavailable
+            }
+
+            // Check if setup is required (local mode only, license mode always returns false)
             const setupStatus = await API.auth.checkSetup();
             if (setupStatus.setupRequired) {
                 this.showSetup();
@@ -35,7 +45,6 @@ const Auth = {
             }
         } catch (error) {
             console.error('Auth initialization failed:', error);
-            // On any error, show login (don't loop)
             this.showLogin();
             return false;
         }
@@ -66,18 +75,10 @@ const Auth = {
         document.getElementById('setup-screen').classList.remove('active');
         document.getElementById('login-screen').classList.remove('active');
         document.getElementById('app').classList.add('active');
-        
-        // Hide settings tab if viewer
-        if (!this.isAdmin()) {
-            const settingsLink = document.querySelector('[data-page="settings"]');
-            if (settingsLink) {
-                settingsLink.parentElement.style.display = 'none';
-            }
-        }
     },
 
     /**
-     * Setup initial admin user
+     * Setup initial admin user (local mode only)
      */
     async setup(username, password) {
         try {

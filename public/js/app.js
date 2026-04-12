@@ -187,14 +187,6 @@ class App {
 
             this.currentUser = await response.json();
 
-            // Hide settings for viewers
-            if (this.currentUser.role === 'viewer') {
-                const settingsLink = document.querySelector('.nav-link[data-page="settings"]');
-                if (settingsLink) {
-                    settingsLink.style.display = 'none';
-                }
-            }
-
             // Add logout button to navbar
             this.addLogoutButton();
 

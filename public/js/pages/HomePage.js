@@ -252,7 +252,7 @@ class HomePage {
 
     createChannelTile(channel) {
         const logo = channel.tvgLogo || '/img/placeholder.png';
-        const logoUrl = logo.startsWith('http') ? `/api/proxy/image?url=${encodeURIComponent(logo)}` : logo;
+        const logoUrl = logo.startsWith('http') ? API.withToken(`/api/proxy/image?url=${encodeURIComponent(logo)}`) : logo;
         const name = channel.name || 'Unknown';
 
         return `
@@ -412,7 +412,7 @@ class HomePage {
 
         // Proxy the poster if it's an external URL
         const poster = data.poster || '/img/poster-placeholder.jpg';
-        const posterUrl = poster.startsWith('http') ? `/api/proxy/image?url=${encodeURIComponent(poster)}` : poster;
+        const posterUrl = poster.startsWith('http') ? API.withToken(`/api/proxy/image?url=${encodeURIComponent(poster)}`) : poster;
 
         return `
             <div class="dashboard-card" data-id="${item_id}" data-type="${type}">
@@ -437,7 +437,7 @@ class HomePage {
         const { data, item_id } = item;
         const type = item.type || item.item_type;
         const poster = item.stream_icon || data.poster || '/img/poster-placeholder.jpg';
-        const posterUrl = poster.startsWith('http') ? `/api/proxy/image?url=${encodeURIComponent(poster)}` : poster;
+        const posterUrl = poster.startsWith('http') ? API.withToken(`/api/proxy/image?url=${encodeURIComponent(poster)}`) : poster;
 
         return `
             <div class="dashboard-card" data-id="${item_id}" data-type="${type}">

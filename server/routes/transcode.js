@@ -6,6 +6,20 @@ const fs = require('fs').promises;
 const db = require('../db');
 const transcodeSession = require('../services/transcodeSession');
 const { resolveStalkerUrl } = require('../services/stalkerResolver');
+const { requireLicenseAuth } = require('../auth');
+
+// License server mode: enforce auth on session creation only.
+// HLS.js fetches .m3u8 and .ts segments via GET — it can't send auth headers.
+if (process.env.LICENSE_SERVER_URL) {
+    router.use((req, res, next) => {
+        // Only protect session creation (POST) and direct transcode (GET /)
+        // Let HLS segment/playlist fetches through (/:id/stream.m3u8, /:id/*.ts)
+        if (req.method === 'POST' || (req.method === 'GET' && req.path === '/')) {
+            return requireLicenseAuth({ checkDevice: true })(req, res, next);
+        }
+        next();
+    });
+}
 
 /**
  * Transcode Routes

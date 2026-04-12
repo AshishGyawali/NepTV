@@ -588,7 +588,7 @@ const InfoPopup = (() => {
 
             const tryLoadEpisodes = async (seriesId) => {
                 try {
-                    const res = await fetch(`/api/proxy/xtream/${series.sourceId}/series_info?series_id=${seriesId}`);
+                    const res = await fetch(`/api/proxy/xtream/${series.sourceId}/series_info?series_id=${seriesId}`, { headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
                     const info = await res.json();
                     const episodes = normalizeSeriesEpisodes(info);
                     if (!episodes || Object.keys(episodes).length === 0) return [];
@@ -664,7 +664,7 @@ const InfoPopup = (() => {
             select.innerHTML = '<option>Loading...</option>';
             const loadNormal = async () => {
                 try {
-                    const res = await fetch(`/api/proxy/xtream/${series.sourceId}/series_info?series_id=${series.series_id}`);
+                    const res = await fetch(`/api/proxy/xtream/${series.sourceId}/series_info?series_id=${series.series_id}`, { headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
                     const info = await res.json();
                     const episodes = normalizeSeriesEpisodes(info);
                     if (!episodes || Object.keys(episodes).length === 0) {

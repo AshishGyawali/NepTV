@@ -36,7 +36,7 @@ class ChannelList {
         if (!url || url.length === 0) return '/img/placeholder.png';
         // Only proxy if we're on HTTPS and the image is HTTP
         if (window.location.protocol === 'https:' && url.startsWith('http://')) {
-            return `/api/proxy/image?url=${encodeURIComponent(url)}`;
+            return API.withToken(`/api/proxy/image?url=${encodeURIComponent(url)}`);
         }
         return url;
     }

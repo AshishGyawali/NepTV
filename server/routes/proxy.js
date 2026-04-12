@@ -13,6 +13,18 @@ const https = require('https');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 const { Readable } = require('stream');
+const { requireLicenseAuth } = require('../auth');
+
+// License server mode: enforce auth + IP lock on API proxy routes.
+// Skip /stream and /image — these are consumed by <video>, <img>, and HLS.js
+// which fetch segments directly and can't send Authorization headers.
+if (process.env.LICENSE_SERVER_URL) {
+    router.use((req, res, next) => {
+        // Let media endpoints through — they're internal URLs from authenticated sessions
+        if (req.path === '/stream' || req.path === '/image') return next();
+        return requireLicenseAuth({ checkDevice: true })(req, res, next);
+    });
+}
 
 // Default cache max age in hours
 const DEFAULT_MAX_AGE_HOURS = 24;

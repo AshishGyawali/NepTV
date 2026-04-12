@@ -731,9 +731,12 @@ class VideoPlayer {
                 body.sourceType = this.currentChannel.sourceType;
                 body.sourceId = this.currentChannel.sourceId;
             }
+            const headers = { 'Content-Type': 'application/json' };
+            const authToken = API.getToken();
+            if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
             const res = await fetch('/api/transcode/session', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify(body)
             });
             if (!res.ok) {
@@ -778,7 +781,7 @@ class VideoPlayer {
             console.log('[Player] Stopping transcode session:', this.currentSessionId);
             try {
                 // Fire and forget cleanup
-                fetch(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE' });
+                fetch(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE', headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
             } catch (err) {
                 console.error('Failed to stop session:', err);
             }
@@ -929,7 +932,7 @@ class VideoPlayer {
                 // Probe to get video codec for HEVC tag handling
                 let videoCodec = 'unknown';
                 try {
-                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
+                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`, { headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
                     const info = await probeRes.json();
                     videoCodec = info.video;
                 } catch (e) { console.warn('Probe failed for force audio, assuming h264'); }
@@ -1261,20 +1264,20 @@ class VideoPlayer {
      */
     getProxiedUrl(url, channel = null) {
         // Already a proxy URL (e.g., stalker streams) — don't double-wrap
-        if (url.startsWith('/api/proxy/stream')) return url;
+        if (url.startsWith('/api/proxy/stream')) return API.withToken(url);
         let proxyUrl = `/api/proxy/stream?url=${encodeURIComponent(url)}&streamType=live`;
         // Add Stalker params so proxy uses MAG STB headers
         if (channel?.sourceType === 'stalker' && channel?.sourceId) {
             proxyUrl += `&stalker=1&sourceId=${channel.sourceId}`;
         }
-        return proxyUrl;
+        return API.withToken(proxyUrl);
     }
     /**
      * Get transcoded URL for a stream (audio transcoding for browser compatibility)
      */
     getTranscodeUrl(url) {
         // Proxy URLs start with / — pass as-is, server resolves to absolute
-        return `/api/transcode?url=${encodeURIComponent(url)}`;
+        return API.withToken(`/api/transcode?url=${encodeURIComponent(url)}`);
     }
     /**
      * Get remuxed URL for a stream (container conversion only, no re-encoding)
@@ -1289,7 +1292,7 @@ class VideoPlayer {
         if (channel?.sourceType) {
             remuxUrl += `&sourceType=${channel.sourceType}`;
         }
-        return remuxUrl;
+        return API.withToken(remuxUrl);
     }
     /**
      * Decode base64 EPG data

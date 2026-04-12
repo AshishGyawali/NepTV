@@ -46,7 +46,7 @@ class EpgGuide {
         if (!url || url.length === 0) return '/img/placeholder.png';
         // Only proxy if we're on HTTPS and the image is HTTP
         if (window.location.protocol === 'https:' && url.startsWith('http://')) {
-            return `/api/proxy/image?url=${encodeURIComponent(url)}`;
+            return API.withToken(`/api/proxy/image?url=${encodeURIComponent(url)}`);
         }
         return url;
     }
@@ -212,7 +212,8 @@ class EpgGuide {
         // Load EPG from ALL sources in parallel
         const fetchPromises = sources.map(async (source) => {
             try {
-                const response = await fetch(`/api/proxy/epg/${source.id}${queryParams}`);
+                const fetchHeaders = API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {};
+                const response = await fetch(`/api/proxy/epg/${source.id}${queryParams}`, { headers: fetchHeaders });
                 if (!response.ok) throw new Error(`Status ${response.status}`);
                 return await response.json();
             } catch (e) {

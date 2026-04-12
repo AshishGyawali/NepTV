@@ -353,9 +353,12 @@ class WatchPage {
     async startTranscodeSession(url, options = {}) {
         try {
             console.log('[WatchPage] Starting HLS transcode session...', options);
+            const headers = { 'Content-Type': 'application/json' };
+            const authToken = API.getToken();
+            if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
             const res = await fetch('/api/transcode/session', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({
                     url,
                     seekOffset: this.resumeTime, // Pass resume point to backend
@@ -375,7 +378,7 @@ class WatchPage {
                 if (statusCode >= 500 || details.includes('251')) {
                     console.warn('[WatchPage] Transcode engine failure. Forcing native fallback.');
                     this.showFallbackToast("Transcode engine busy. Attempting native fallback...");
-                    return `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+                    return API.withToken(`/api/proxy/stream?url=${encodeURIComponent(url)}`);
                 }
                 
                 throw new Error(details);
@@ -388,7 +391,7 @@ class WatchPage {
 
             if (err.message.includes('251') || err.message.includes('Failed to fetch') || err.message.includes('Transcoding failed')) {
                 this.showFallbackToast("Transcode failed. Trying raw stream recovery...");
-                return `/api/proxy/stream?url=${encodeURIComponent(url)}`;
+                return API.withToken(`/api/proxy/stream?url=${encodeURIComponent(url)}`);
             }
 
             // Fallback to legacy direct transcode if session fails
@@ -396,7 +399,7 @@ class WatchPage {
             if (options.audioIdx !== undefined) params.set('audioIdx', String(options.audioIdx));
             if (options.audioChannels !== undefined) params.set('audioChannels', String(options.audioChannels));
             if (options.audioCodec) params.set('audioCodec', options.audioCodec);
-            return `/api/transcode?${params.toString()}`;
+            return API.withToken(`/api/transcode?${params.toString()}`);
         }
     }
 
@@ -408,7 +411,7 @@ class WatchPage {
             console.log('[WatchPage] Stopping transcode session:', this.currentSessionId);
             try {
                 // Fire and forget cleanup
-                fetch(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE' });
+                fetch(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE', headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
             } catch (err) {
                 console.error('Failed to stop session:', err);
             }
@@ -461,15 +464,15 @@ class WatchPage {
     }
 
     getProxiedUrl(url) {
-        if (url.startsWith('/api/proxy/stream')) return url;
-        return `/api/proxy/stream?url=${encodeURIComponent(url)}&streamType=vod`;
+        if (url.startsWith('/api/proxy/stream')) return API.withToken(url);
+        return API.withToken(`/api/proxy/stream?url=${encodeURIComponent(url)}&streamType=vod`);
     }
 
     getRemuxUrl(url) {
         const proxyRequiredDomains = ['pluto.tv'];
         const needsProxy = url.startsWith('stalker://') || proxyRequiredDomains.some(domain => url.includes(domain));
         const inputUrl = needsProxy ? this.getProxiedUrl(url) : url;
-        return `/api/remux?url=${encodeURIComponent(inputUrl)}`;
+        return API.withToken(`/api/remux?url=${encodeURIComponent(inputUrl)}`);
     }
 
     playNativeSource(url, context = 'playback') {
@@ -521,7 +524,7 @@ class WatchPage {
             console.log('[WatchPage] Auto Transcode enabled. Probing stream...');
             try {
                 const ua = settings.userAgentPreset === 'custom' ? settings.userAgentCustom : settings.userAgentPreset;
-                const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
+                const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`, { headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
                 const info = await probeRes.json();
                 console.log(`[WatchPage] Probe result: video=${info.video}, audio=${info.audio}, ${info.width}x${info.height}, compatible=${info.compatible}`);
 
@@ -590,7 +593,7 @@ class WatchPage {
             let videoCodec = 'unknown';
             try {
                 const ua = settings.userAgentPreset === 'custom' ? settings.userAgentCustom : settings.userAgentPreset;
-                const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
+                const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`, { headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
                 const info = await probeRes.json();
                 videoCodec = info.video;
             } catch (e) { console.warn('Probe failed for force audio, assuming h264'); }

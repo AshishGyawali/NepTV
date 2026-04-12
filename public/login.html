@@ -159,6 +159,53 @@
         .setup-message.show {
             display: block;
         }
+
+        .success-message {
+            background: rgba(16, 185, 129, 0.1);
+            color: #10b981;
+            padding: 12px 16px;
+            border-radius: var(--radius-md);
+            margin-bottom: var(--space-lg);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            font-size: 14px;
+            display: none;
+        }
+
+        .success-message.show {
+            display: block;
+        }
+
+        .toggle-link {
+            text-align: center;
+            margin-top: var(--space-lg);
+            font-size: 14px;
+            color: var(--color-text-secondary);
+        }
+
+        .toggle-link a {
+            color: var(--color-accent);
+            cursor: pointer;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .toggle-link a:hover {
+            text-decoration: underline;
+        }
+
+        #email-group, #fullname-group {
+            display: none;
+        }
+
+        .input-hint {
+            font-size: 12px;
+            color: var(--color-text-muted);
+            margin-top: 4px;
+        }
+
+        .input-hint.error {
+            color: var(--color-error);
+        }
     </style>
 </head>
 
@@ -176,15 +223,29 @@
             </div>
 
             <div class="error-message" id="error-message"></div>
+            <div class="success-message" id="success-message"></div>
             <div class="setup-message" id="setup-message">
                 Welcome! Please create your admin account to get started.
             </div>
 
             <form id="login-form">
+                <div class="form-group" id="fullname-group">
+                    <label for="fullname">Full Name</label>
+                    <input type="text" id="fullname" name="fullname" autocomplete="name"
+                        placeholder="Enter your full name">
+                </div>
+
                 <div class="form-group">
                     <label for="username">Username</label>
                     <input type="text" id="username" name="username" required autocomplete="username"
                         placeholder="Enter your username">
+                    <div class="input-hint" id="username-hint" style="display:none">Only letters, numbers, and underscores. Min 3 characters.</div>
+                </div>
+
+                <div class="form-group" id="email-group">
+                    <label for="email">Email <span style="color: var(--color-text-muted); font-weight: 400;">(optional)</span></label>
+                    <input type="email" id="email" name="email" autocomplete="email"
+                        placeholder="Enter your email">
                 </div>
 
                 <div class="form-group">
@@ -195,6 +256,12 @@
 
                 <button type="submit" class="btn-login" id="submit-btn">Sign In</button>
             </form>
+
+            <!-- Toggle between login and register (license mode only) -->
+            <div class="toggle-link" id="toggle-link" style="display: none;">
+                <span id="toggle-text">Don't have an account?</span>
+                <a id="toggle-action" onclick="toggleMode()">Sign Up</a>
+            </div>
 
             <div class="sso-divider" style="text-align: center; margin: 20px 0; position: relative;">
                 <span
@@ -225,6 +292,8 @@
         </div>
     </div>
 
+    <!-- Load api.js for device fingerprint + fetch interceptor (injects X-Device-Id on login) -->
+    <script src="js/api.js"></script>
     <script>
         // Start SSO Login
         document.getElementById('btn-sso-login').addEventListener('click', () => {
@@ -238,12 +307,84 @@
             const errorMessage = document.getElementById('error-message');
             errorMessage.textContent = error;
             errorMessage.classList.add('show');
-            // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
         }
 
-        // Check if setup is required
+        // State
         let isSetupMode = false;
+        let isRegisterMode = false;
+        let authMode = 'local'; // 'local' or 'license'
+
+        function toggleMode() {
+            isRegisterMode = !isRegisterMode;
+            const subtitle = document.getElementById('login-subtitle');
+            const submitBtn = document.getElementById('submit-btn');
+            const toggleText = document.getElementById('toggle-text');
+            const toggleAction = document.getElementById('toggle-action');
+            const emailGroup = document.getElementById('email-group');
+            const fullnameGroup = document.getElementById('fullname-group');
+            const passwordField = document.getElementById('password');
+            const usernameHint = document.getElementById('username-hint');
+
+            // Clear messages
+            document.getElementById('error-message').classList.remove('show');
+            document.getElementById('success-message').classList.remove('show');
+
+            if (isRegisterMode) {
+                subtitle.textContent = 'Create your account';
+                submitBtn.textContent = 'Sign Up';
+                toggleText.textContent = 'Already have an account?';
+                toggleAction.textContent = 'Sign In';
+                fullnameGroup.style.display = 'block';
+                emailGroup.style.display = 'block';
+                usernameHint.style.display = 'block';
+                passwordField.placeholder = 'Minimum 6 characters';
+                passwordField.autocomplete = 'new-password';
+                document.getElementById('fullname').required = true;
+            } else {
+                subtitle.textContent = 'Sign in to continue';
+                submitBtn.textContent = 'Sign In';
+                toggleText.textContent = "Don't have an account?";
+                toggleAction.textContent = 'Sign Up';
+                fullnameGroup.style.display = 'none';
+                emailGroup.style.display = 'none';
+                usernameHint.style.display = 'none';
+                passwordField.placeholder = 'Enter your password';
+                passwordField.autocomplete = 'current-password';
+                document.getElementById('fullname').required = false;
+            }
+        }
+
+        // Username validation (live)
+        document.getElementById('username').addEventListener('input', function() {
+            if (!isRegisterMode) return;
+            const hint = document.getElementById('username-hint');
+            const val = this.value;
+            if (val.length > 0 && (val.length < 3 || !/^[a-zA-Z0-9_]+$/.test(val))) {
+                hint.textContent = 'Only letters, numbers, and underscores. Min 3 characters.';
+                hint.className = 'input-hint error';
+            } else {
+                hint.textContent = 'Only letters, numbers, and underscores. Min 3 characters.';
+                hint.className = 'input-hint';
+            }
+        });
+
+        async function checkAuthMode() {
+            try {
+                const response = await fetch('/api/auth/mode');
+                const data = await response.json();
+                authMode = data.mode;
+
+                if (data.registrationEnabled) {
+                    // License mode — show register toggle, hide SSO
+                    document.getElementById('toggle-link').style.display = 'block';
+                    document.querySelector('.sso-divider').style.display = 'none';
+                    document.getElementById('btn-sso-login').style.display = 'none';
+                }
+            } catch (err) {
+                console.error('Error checking auth mode:', err);
+            }
+        }
 
         async function checkSetupRequired() {
             try {
@@ -256,9 +397,10 @@
                     document.getElementById('submit-btn').textContent = 'Create Account';
                     document.getElementById('setup-message').classList.add('show');
                     document.getElementById('password').placeholder = 'Minimum 6 characters';
-                    // Hide SSO in setup mode
+                    // Hide SSO and register toggle in setup mode
                     document.querySelector('.sso-divider').style.display = 'none';
                     document.getElementById('btn-sso-login').style.display = 'none';
+                    document.getElementById('toggle-link').style.display = 'none';
                 }
             } catch (err) {
                 console.error('Error checking setup status:', err);
@@ -269,26 +411,76 @@
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
 
-            const username = document.getElementById('username').value;
+            const username = document.getElementById('username').value.trim();
             const password = document.getElementById('password').value;
+            const email = document.getElementById('email').value.trim();
+            const fullname = document.getElementById('fullname').value.trim();
             const submitBtn = document.getElementById('submit-btn');
             const errorMessage = document.getElementById('error-message');
+            const successMessage = document.getElementById('success-message');
 
-            // Clear previous errors
+            // Clear previous messages
             errorMessage.classList.remove('show');
             errorMessage.textContent = '';
+            successMessage.classList.remove('show');
+            successMessage.textContent = '';
+
+            // Username validation (register mode)
+            if (isRegisterMode) {
+                if (username.length < 3) {
+                    errorMessage.textContent = 'Username must be at least 3 characters.';
+                    errorMessage.classList.add('show');
+                    return;
+                }
+                if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+                    errorMessage.textContent = 'Username can only contain letters, numbers, and underscores.';
+                    errorMessage.classList.add('show');
+                    return;
+                }
+                if (!fullname) {
+                    errorMessage.textContent = 'Full name is required.';
+                    errorMessage.classList.add('show');
+                    return;
+                }
+            }
 
             // Disable button
             submitBtn.disabled = true;
             submitBtn.textContent = 'Please wait...';
 
             try {
+                if (isRegisterMode) {
+                    // Registration flow (license mode)
+                    const response = await fetch('/api/auth/register', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password, fullname, email: email || undefined })
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Registration failed');
+                    }
+
+                    // Show success message and switch to login
+                    successMessage.textContent = data.message || 'Account created! Your account is pending admin approval.';
+                    successMessage.classList.add('show');
+
+                    // Switch back to login mode
+                    isRegisterMode = true; // toggleMode will flip it
+                    toggleMode();
+
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Sign In';
+                    return;
+                }
+
+                // Login or setup flow
                 const endpoint = isSetupMode ? '/api/auth/setup' : '/api/auth/login';
                 const response = await fetch(endpoint, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password })
                 });
 
@@ -301,18 +493,25 @@
                 // Store token
                 localStorage.setItem('authToken', data.token);
 
-                // Redirect to main app (replace history to prevent back button issues)
+                // Redirect to main app
                 window.location.replace('/');
 
             } catch (err) {
                 errorMessage.textContent = err.message;
                 errorMessage.classList.add('show');
                 submitBtn.disabled = false;
-                submitBtn.textContent = isSetupMode ? 'Create Account' : 'Sign In';
+                if (isSetupMode) {
+                    submitBtn.textContent = 'Create Account';
+                } else if (isRegisterMode) {
+                    submitBtn.textContent = 'Sign Up';
+                } else {
+                    submitBtn.textContent = 'Sign In';
+                }
             }
         });
 
-        // Check setup status on load
+        // Init
+        checkAuthMode();
         checkSetupRequired();
     </script>
 </body>

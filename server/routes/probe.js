@@ -2,6 +2,12 @@ const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
 const { resolveStalkerUrl } = require('../services/stalkerResolver');
+const { requireLicenseAuth } = require('../auth');
+
+// License server mode: enforce auth + IP lock on probe routes
+if (process.env.LICENSE_SERVER_URL) {
+    router.use(requireLicenseAuth({ checkDevice: true }));
+}
 
 /**
  * Probe endpoint - detects stream codecs and container
