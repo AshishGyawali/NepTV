@@ -5,6 +5,7 @@
  * All user state (registration, login, token validation, IP locking)
  * is owned by the remote server — the Node app never stores users locally.
  */
+const { licenseServerUrl } = require('../authMode');
 
 // Cache verified tokens for a short window to avoid hitting the PHP server on every request
 const tokenCache = new Map();
@@ -172,8 +173,7 @@ let instance = null;
 
 function getInstance() {
     if (!instance) {
-        const url = process.env.LICENSE_SERVER_URL || 'https://nepdevtv.online/auth-server';
-        instance = new LicenseService(url);
+        instance = new LicenseService(licenseServerUrl);
     }
     return instance;
 }

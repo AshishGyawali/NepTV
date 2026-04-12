@@ -2,14 +2,11 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const auth = require('../auth');
+const { isLicenseMode, licenseServerUrl } = require('../authMode');
 const { resolveRequestDeviceMac } = require('../services/deviceIdentity');
 
-// Detect auth mode: license server (remote PHP) vs local DB
-const LICENSE_SERVER_URL = process.env.LICENSE_SERVER_URL;
-const isLicenseMode = !!LICENSE_SERVER_URL;
-
 if (isLicenseMode) {
-    console.log('[Auth] License server mode — forwarding auth to', LICENSE_SERVER_URL);
+    console.log('[Auth] License server mode — forwarding auth to', licenseServerUrl);
 } else {
     console.log('[Auth] Local DB mode — using built-in user management');
 }

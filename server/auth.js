@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const passport = require('passport');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const { Strategy: LocalStrategy } = require('passport-local');
+const { isLicenseMode } = require('./authMode');
 const { resolveRequestDeviceMac } = require('./services/deviceIdentity');
 
 /**
@@ -231,7 +232,7 @@ function configureOidcStrategy(findUserByOidcId, findUserByEmail, createUser) {
  * In license mode → delegates to requireLicenseAuth (remote PHP verify)
  * In local mode   → uses Passport JWT strategy
  */
-const requireAuth = process.env.LICENSE_SERVER_URL
+const requireAuth = isLicenseMode
     ? requireLicenseAuth()
     : passport.authenticate('jwt', { session: false });
 
