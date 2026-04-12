@@ -2,11 +2,15 @@
  * NodeCast TV Application Entry Point
  */
 
+const DONATION_BANNER_DISMISS_KEY = 'donationBannerDismissedUntil';
+const DONATION_BANNER_SNOOZE_MS = 30 * 60 * 1000;
+
 class App {
     constructor() {
         this.currentPage = 'home';
         this.pages = {};
         this.currentUser = null;
+        this.donationBannerTimer = null;
 
         // Initialize components
         this.player = new VideoPlayer();
@@ -189,12 +193,65 @@ class App {
 
             // Add logout button to navbar
             this.addLogoutButton();
+            this.initDonationBanner();
 
         } catch (err) {
             console.error('Authentication error:', err);
             localStorage.removeItem('authToken');
             window.location.replace('/login.html');
         }
+    }
+
+    initDonationBanner() {
+        const banner = document.getElementById('donationBanner');
+        const closeButton = document.getElementById('donationBannerClose');
+
+        if (!banner || !closeButton) return;
+
+        if (!closeButton.dataset.bound) {
+            closeButton.addEventListener('click', () => this.dismissDonationBanner());
+            closeButton.dataset.bound = 'true';
+        }
+
+        this.scheduleDonationBanner();
+    }
+
+    scheduleDonationBanner() {
+        const banner = document.getElementById('donationBanner');
+        if (!banner) return;
+
+        if (this.donationBannerTimer) {
+            clearTimeout(this.donationBannerTimer);
+            this.donationBannerTimer = null;
+        }
+
+        const dismissedUntil = Number(localStorage.getItem(DONATION_BANNER_DISMISS_KEY) || 0);
+        const remaining = dismissedUntil - Date.now();
+
+        if (remaining > 0) {
+            banner.classList.add('hidden');
+            this.donationBannerTimer = setTimeout(() => {
+                localStorage.removeItem(DONATION_BANNER_DISMISS_KEY);
+                banner.classList.remove('hidden');
+                this.donationBannerTimer = null;
+            }, remaining);
+            return;
+        }
+
+        localStorage.removeItem(DONATION_BANNER_DISMISS_KEY);
+        banner.classList.remove('hidden');
+    }
+
+    dismissDonationBanner() {
+        const banner = document.getElementById('donationBanner');
+        if (!banner) return;
+
+        localStorage.setItem(
+            DONATION_BANNER_DISMISS_KEY,
+            String(Date.now() + DONATION_BANNER_SNOOZE_MS)
+        );
+        banner.classList.add('hidden');
+        this.scheduleDonationBanner();
     }
 
     addLogoutButton() {

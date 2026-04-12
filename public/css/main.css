@@ -220,6 +220,98 @@ h4 {
   gap: var(--space-xs);
 }
 
+/* =====================================================
+   Donation Banner
+   ===================================================== */
+.donation-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  padding: 10px 20px;
+  padding-left: max(20px, var(--safe-area-inset-left));
+  padding-right: max(20px, var(--safe-area-inset-right));
+  background: linear-gradient(135deg, #ff6b35, #f7931e, #ffcc02);
+  color: #1a1a2e;
+  position: relative;
+  z-index: 95;
+  flex-shrink: 0;
+  animation: donationBannerGlow 3s ease-in-out infinite alternate;
+  box-shadow: 0 2px 15px rgba(255, 107, 53, 0.3);
+}
+
+.donation-banner a {
+  color: inherit;
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  padding-right: 28px;
+}
+
+.donation-banner a:hover {
+  text-decoration: underline;
+}
+
+.donation-banner strong {
+  font-weight: 800;
+}
+
+.donation-banner .momo-icon {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 1.2rem;
+  animation: donationBannerBounce 1.5s infinite;
+}
+
+.donation-close {
+  position: absolute;
+  right: 15px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.15);
+  border: none;
+  border-radius: 50%;
+  color: #1a1a2e;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+
+.donation-close:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.donation-close:active {
+  transform: translateY(-50%) scale(0.96);
+}
+
+@keyframes donationBannerGlow {
+  0% {
+    box-shadow: 0 2px 15px rgba(255, 107, 53, 0.3);
+  }
+
+  100% {
+    box-shadow: 0 2px 25px rgba(255, 204, 2, 0.5);
+  }
+}
+
+@keyframes donationBannerBounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
 /* Mobile Menu Toggle Button */
 .mobile-menu-toggle {
   display: none;
@@ -2311,6 +2403,17 @@ kbd {
     padding: var(--space-sm) 0;
     box-shadow: var(--shadow-lg);
     visibility: visible;
+  }
+
+  .donation-banner {
+    justify-content: flex-start;
+    padding-right: 52px;
+  }
+
+  .donation-banner a {
+    text-align: left;
+    line-height: 1.35;
+    padding-right: 0;
   }
 
   .nav-link {
