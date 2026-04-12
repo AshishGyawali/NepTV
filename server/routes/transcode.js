@@ -102,6 +102,13 @@ router.post('/session', async (req, res) => {
         const isStalkerSource = sourceType === 'stalker';
         const isLiveStream = !!isLive;
 
+        // Live IPTV sources are too inconsistent for safe video stream-copy HLS.
+        // Force encode on the server even if an older client still requests "copy".
+        if (isLiveStream && videoMode === 'copy') {
+            console.log('[Transcode] Live stream requested video copy; overriding to encode for HLS stability');
+            videoMode = 'encode';
+        }
+
         // === THE XTREAM FIREWALL BYPASS ===
         if (!isStalkerSource && isLiveStream && url.includes('.m3u8')) {
             url = url.replace('.m3u8', '.ts');

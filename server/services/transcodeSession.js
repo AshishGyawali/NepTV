@@ -29,6 +29,7 @@ const CACHE_DIR = path.join(process.cwd(), 'transcode-cache');
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes idle timeout
 const SEGMENT_DURATION = 4; // seconds per HLS segment
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Check every 5 minutes
+const LIVE_RESTART_DELAY_MS = 1000; // Short retry window for flaky live IPTV sources
 
 /**
  * Generate a unique session ID
@@ -65,6 +66,9 @@ class TranscodeSession extends EventEmitter {
         this.error = null;
         this.startTime = Date.now();
         this.lastAccess = Date.now();
+        this.stopRequested = false;
+        this.restartTimer = null;
+        this.restartAttempts = 0;
         this.options = {
             ffmpegPath: options.ffmpegPath || 'ffmpeg',
             userAgent: options.userAgent || 'Mozilla/5.0',
@@ -95,8 +99,14 @@ class TranscodeSession extends EventEmitter {
      * Start the transcoding process
      */
     async start() {
-        if (this.status === 'running') {
+        if (this.status === 'running' || this.status === 'starting') {
             return;
+        }
+
+        this.stopRequested = false;
+        if (this.restartTimer) {
+            clearTimeout(this.restartTimer);
+            this.restartTimer = null;
         }
 
         this.status = 'starting';
@@ -123,6 +133,8 @@ class TranscodeSession extends EventEmitter {
             });
 
             this.status = 'running';
+            this.error = null;
+            this.restartAttempts = 0;
 
             // Handle stdout (should be empty for file output)
             this.process.stdout.on('data', (data) => {
@@ -147,6 +159,21 @@ class TranscodeSession extends EventEmitter {
 
             // Handle process exit
             this.process.on('exit', (code) => {
+                const shouldRestart = this.shouldAutoRestart();
+
+                if (shouldRestart) {
+                    const exitReason = (code === 0 || code === null)
+                        ? 'source ended or disconnected'
+                        : `exit code ${code}`;
+                    console.warn(`[TranscodeSession ${this.id}] Live stream FFmpeg exited (${exitReason}); restarting session`);
+                    this.process = null;
+                    this.status = 'pending';
+                    this.error = null;
+                    this.emit('exit', code);
+                    this.scheduleRestart();
+                    return;
+                }
+
                 if (code === 0 || code === null) {
                     console.log(`[TranscodeSession ${this.id}] FFmpeg completed successfully`);
                     this.status = 'stopped';
@@ -182,7 +209,8 @@ class TranscodeSession extends EventEmitter {
      */
     buildFFmpegArgs() {
         const segmentPattern = path.join(this.dir, 'seg%04d.m4s');
-        const videoMode = this.options.videoMode || 'encode';
+        const requestedVideoMode = this.options.videoMode || 'encode';
+        const videoMode = (this.options.isLive && requestedVideoMode === 'copy') ? 'encode' : requestedVideoMode;
 
         // Resolve 'auto' encoder to detected hardware, fallback to software
         let encoder = this.options.hwEncoder || 'software';
@@ -204,15 +232,27 @@ class TranscodeSession extends EventEmitter {
         }
 
         // Input options (common)
+        const inputFlags = this.options.isLive
+            ? '+genpts+discardcorrupt+igndts'
+            : '+genpts+discardcorrupt';
+
         args.push(
             '-probesize', '5000000',
             '-analyzeduration', '5000000',
-            '-fflags', '+genpts+discardcorrupt',
+            '-fflags', inputFlags,
             '-err_detect', 'ignore_err',
             '-reconnect', '1',
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '3'
         );
+
+        if (this.options.isLive) {
+            args.push(
+                '-reconnect_at_eof', '1',
+                '-reconnect_on_network_error', '1',
+                '-seekable', '0'
+            );
+        }
 
         if (this.options.customHeaders) {
             args.push('-headers', this.options.customHeaders);
@@ -266,6 +306,15 @@ class TranscodeSession extends EventEmitter {
             }
         } else {
             this.addVideoEncoderArgs(args, encoder);
+
+            // Live HLS output is more stable when segments align to fresh keyframes.
+            // Keep this limited to live re-encoding so VOD behavior stays untouched.
+            if (this.options.isLive) {
+                args.push(
+                    '-flags', '+cgop',
+                    '-force_key_frames', `expr:gte(t,n_forced*${SEGMENT_DURATION})`
+                );
+            }
         }
 
         // Audio: Apply mix preset
@@ -316,12 +365,17 @@ class TranscodeSession extends EventEmitter {
             );
         }
 
+        const hlsFlags = ['independent_segments', 'append_list'];
+        if (this.options.isLive) {
+            hlsFlags.push('omit_endlist');
+        }
+
         // HLS output options
         args.push(
             '-f', 'hls',
             '-hls_time', String(SEGMENT_DURATION),
             '-hls_list_size', '0', // Keep all segments in playlist
-            '-hls_flags', 'independent_segments+append_list',
+            '-hls_flags', hlsFlags.join('+'),
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', path.join(this.dir, 'seg%04d.ts'),
             this.playlistPath
@@ -558,10 +612,49 @@ class TranscodeSession extends EventEmitter {
         );
     }
 
+    shouldAutoRestart() {
+        return this.options.isLive && !this.stopRequested && sessions.has(this.id);
+    }
+
+    scheduleRestart() {
+        if (!this.shouldAutoRestart() || this.restartTimer) {
+            return;
+        }
+
+        const delayMs = Math.min(LIVE_RESTART_DELAY_MS * Math.max(this.restartAttempts + 1, 1), 5000);
+        this.restartAttempts += 1;
+
+        console.log(`[TranscodeSession ${this.id}] Scheduling live restart in ${delayMs}ms (attempt ${this.restartAttempts})`);
+
+        this.restartTimer = setTimeout(async () => {
+            this.restartTimer = null;
+
+            if (!this.shouldAutoRestart()) {
+                return;
+            }
+
+            try {
+                await this.start();
+            } catch (err) {
+                console.error(`[TranscodeSession ${this.id}] Live restart failed: ${err.message}`);
+                this.status = 'pending';
+                this.error = err.message;
+                this.scheduleRestart();
+            }
+        }, delayMs);
+
+        this.restartTimer.unref?.();
+    }
+
     /**
      * Stop the transcoding process
      */
     stop() {
+        this.stopRequested = true;
+        if (this.restartTimer) {
+            clearTimeout(this.restartTimer);
+            this.restartTimer = null;
+        }
         if (this.process) {
             console.log(`[TranscodeSession ${this.id}] Stopping FFmpeg process`);
             this.process.kill('SIGTERM');

@@ -846,10 +846,11 @@ class VideoPlayer {
                     if (info.needsTranscode || this.settings.upscaleEnabled) {
                         // Incompatible audio (AC3/EAC3/DTS) or Upscaling enabled - use transcode session
                         console.log(`[Player] Auto: Using HLS transcode session (${this.settings.upscaleEnabled ? 'Upscaling' : 'Incompatible audio/video'})`);
-                        // Heuristic: If video is h264, it's likely compatible, so only copy video (audio transcode only)
-                        // BUT: If upscaling is enabled, we MUST encode.
-                        const videoMode = (info.video && info.video.includes('h264') && !this.settings.upscaleEnabled) ? 'copy' : 'encode';
-                        const statusText = videoMode === 'copy' ? 'Transcoding (Audio)' : (this.settings.upscaleEnabled ? 'Upscaling' : 'Transcoding (Video)');
+                        // Live IPTV streams are too inconsistent for safe HLS video copy.
+                        // Re-encode live video when transcoding is needed to normalize
+                        // timestamps, pixel format, and segment/keyframe boundaries.
+                        const videoMode = 'encode';
+                        const statusText = this.settings.upscaleEnabled ? 'Upscaling' : 'Transcoding (Video)';
                         const statusMode = this.settings.upscaleEnabled ? 'upscaling' : 'transcoding';
                         this.updateTranscodeStatus(statusMode, statusText);
                         const playlistUrl = await this.startTranscodeSession(streamUrl, {
@@ -927,16 +928,9 @@ class VideoPlayer {
             }
             // CHECK: Force Audio Transcode (Copy Video) - legacy forceTranscode setting
             if (this.settings.forceTranscode) {
-                console.log('[Player] Force Audio Transcode enabled. Starting session (copy)...');
-                this.updateTranscodeStatus('transcoding', 'Transcoding (Audio)');
-                // Probe to get video codec for HEVC tag handling
-                let videoCodec = 'unknown';
-                try {
-                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`, { headers: API.getToken() ? { 'Authorization': `Bearer ${API.getToken()}` } : {} });
-                    const info = await probeRes.json();
-                    videoCodec = info.video;
-                } catch (e) { console.warn('Probe failed for force audio, assuming h264'); }
-                const playlistUrl = await this.startTranscodeSession(streamUrl, { videoMode: 'copy', videoCodec });
+                console.log('[Player] Force Audio Transcode enabled for live TV. Using full video encode for playback stability.');
+                this.updateTranscodeStatus('transcoding', 'Transcoding (Video)');
+                const playlistUrl = await this.startTranscodeSession(streamUrl, { videoMode: 'encode' });
                 this.currentUrl = playlistUrl;
                 console.log('[Player] Playing transcoded HLS stream:', playlistUrl);
                 this.playHls(playlistUrl);

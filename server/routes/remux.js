@@ -110,10 +110,22 @@ router.get('/', async (req, res) => {
         }
     });
 
-    // Cleanup on client disconnect
-    req.on('close', () => {
-        console.log('[Remux] Client disconnected, killing FFmpeg process');
-        ffmpeg.kill('SIGKILL');
+    let responseFinished = false;
+
+    // Mark normal completion separately so we only kill FFmpeg on an early close.
+    res.on('finish', () => {
+        responseFinished = true;
+    });
+
+    // Cleanup only when the response closes before finishing.
+    res.on('close', () => {
+        if (responseFinished) {
+            return;
+        }
+        if (ffmpeg.exitCode === null && !ffmpeg.killed) {
+            console.log('[Remux] Response closed early, killing FFmpeg process');
+            ffmpeg.kill('SIGKILL');
+        }
     });
 
     // Handle process exit
