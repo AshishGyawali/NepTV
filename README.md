@@ -1,5 +1,4 @@
 <p align="center">
-  <img src="public/img/logo-banner.png" alt="NepTV" height="60" />
 </p>
 
 # What is NepTV?
